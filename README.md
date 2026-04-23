@@ -136,6 +136,7 @@ The interactive Swagger docs are available at **http://localhost:8000/docs**.
 | `POST` | `/convert` | Upload a single file → JSONL conversion (chunked) |
 | `POST` | `/convert/unchunked` | Upload a single file → **one** JSONL record (whole-file mode) |
 | `POST` | `/convert/batch` | Upload multiple files → batch JSONL conversion |
+| `POST` | `/convert/batch/unchunked` | Upload multiple files → batch JSONL conversion (whole-file mode) |
 | `GET` | `/files` | List all generated JSONL output files |
 | `GET` | `/files/{filename}` | Download a specific JSONL file |
 | `DELETE` | `/files` | Clear all generated JSONL files |

@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
 from semantic_pipeline.models import EmitterConfig
@@ -85,7 +86,9 @@ app = FastAPI(
     description=(
         "Upload enterprise files (.xlsx, .docx, .md, .txt, .json, .yaml) "
         "and convert them into semantically chunked JSONL format for RAG pipelines. "
-        "Output files are written to the `jsonl/` directory."
+        "Output files are written to the `jsonl/` directory.\n\n"
+        "**NOTE:** For batch file uploading, use the Custom Web Portal at the root (`/`) "
+        "instead of Swagger UI, as Swagger does not natively support multi-file selection."
     ),
     version="1.0.0",
 )
@@ -129,6 +132,15 @@ def _human_size(size_bytes: int) -> str:
 
 
 # ── Endpoints ───────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse, tags=["UI"], include_in_schema=False)
+async def serve_ui():
+    """Serve the premium drag-and-drop web portal."""
+    html_path = Path(__file__).parent / "index.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Web UI not found.")
+    return html_path.read_text(encoding="utf-8")
+
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
@@ -268,48 +280,121 @@ async def convert_batch(
     total_chunks = 0
     files_skipped = 0
 
-    config = EmitterConfig(
-        output_dir=str(JSONL_OUTPUT_DIR),
-        base_filename="batch",
-        usecase_id=usecase_id,
-        identifier=identifier,
-        data_classification=data_classification,
+    for upload in files:
+        ext = Path(upload.filename).suffix.lower()
+
+        if ext not in SUPPORTED:
+            details.append({
+                "file": upload.filename,
+                "status": "skipped",
+                "reason": f"Unsupported type: {ext}",
+                "chunks": 0,
+            })
+            files_skipped += 1
+            continue
+
+        temp_path = _save_upload(upload)
+        try:
+            stem = Path(upload.filename).stem
+            config = EmitterConfig(
+                output_dir=str(JSONL_OUTPUT_DIR),
+                base_filename=stem,
+                usecase_id=usecase_id,
+                identifier=identifier,
+                data_classification=data_classification,
+            )
+            with SemanticRouter(config) as router:
+                chunks = router.ingest_file(str(temp_path))
+            total_chunks += len(chunks)
+            details.append({
+                "file": upload.filename,
+                "status": "success",
+                "chunks": len(chunks),
+            })
+        except Exception as e:
+            details.append({
+                "file": upload.filename,
+                "status": "error",
+                "reason": str(e),
+                "chunks": 0,
+            })
+            files_skipped += 1
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    return BatchConvertResponse(
+        files_processed=len(files) - files_skipped,
+        files_skipped=files_skipped,
+        total_chunks=total_chunks,
+        jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
+        processing_time_ms=round(elapsed_ms, 2),
+        details=details,
     )
 
-    with SemanticRouter(config) as router:
-        for upload in files:
-            ext = Path(upload.filename).suffix.lower()
 
-            if ext not in SUPPORTED:
-                details.append({
-                    "file": upload.filename,
-                    "status": "skipped",
-                    "reason": f"Unsupported type: {ext}",
-                    "chunks": 0,
-                })
-                files_skipped += 1
-                continue
+@app.post("/convert/batch/unchunked", response_model=BatchConvertResponse, tags=["Conversion"])
+async def convert_batch_unchunked(
+    files: List[UploadFile] = File(..., description="Files to convert in unchunked mode"),
+    usecase_id: str = Query("default", description="Business use-case identifier"),
+    identifier: str = Query("api-upload", description="Team or system identifier"),
+    data_classification: str = Query("internal", description="Data sensitivity label"),
+):
+    """
+    Upload multiple files and convert them all to JSONL in unchunked mode.
+    
+    Each file produces exactly one JSONL record containing its entire contents.
+    All output is written to the shared `jsonl/` directory.
+    """
+    start = time.perf_counter()
+    details = []
+    total_chunks = 0
+    files_skipped = 0
 
-            temp_path = _save_upload(upload)
-            try:
-                chunks = router.ingest_file(str(temp_path))
-                total_chunks += len(chunks)
-                details.append({
-                    "file": upload.filename,
-                    "status": "success",
-                    "chunks": len(chunks),
-                })
-            except Exception as e:
-                details.append({
-                    "file": upload.filename,
-                    "status": "error",
-                    "reason": str(e),
-                    "chunks": 0,
-                })
-                files_skipped += 1
-            finally:
-                if temp_path.exists():
-                    temp_path.unlink()
+    for upload in files:
+        ext = Path(upload.filename).suffix.lower()
+
+        if ext not in SUPPORTED:
+            details.append({
+                "file": upload.filename,
+                "status": "skipped",
+                "reason": f"Unsupported type: {ext}",
+                "chunks": 0,
+            })
+            files_skipped += 1
+            continue
+
+        temp_path = _save_upload(upload)
+        try:
+            stem = Path(upload.filename).stem
+            config = EmitterConfig(
+                output_dir=str(JSONL_OUTPUT_DIR),
+                base_filename=f"{stem}_unchunked",
+                usecase_id=usecase_id,
+                identifier=identifier,
+                data_classification=data_classification,
+            )
+            with SemanticRouter(config) as router:
+                chunks = router.ingest_file_unchunked(str(temp_path))
+            total_chunks += len(chunks)
+            details.append({
+                "file": upload.filename,
+                "status": "success",
+                "chunks": len(chunks),
+            })
+        except Exception as e:
+            details.append({
+                "file": upload.filename,
+                "status": "error",
+                "reason": str(e),
+                "chunks": 0,
+            })
+            files_skipped += 1
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
 
     elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -362,3 +447,44 @@ async def clear_output_files():
         f.unlink()
 
     return {"status": "cleared", "files_deleted": count}
+
+
+# ── OpenAPI Spec Patch ──────────────────────────────────────────
+# Swagger UI (as bundled in FastAPI) does not correctly render
+# multi-file upload widgets when `contentMediaType` is present
+# alongside `type: array`. We strip it and force `format: binary`
+# on all file-upload fields so the UI shows proper file pickers.
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    schemas = openapi_schema.get("components", {}).get("schemas", {})
+    for schema in schemas.values():
+        for prop_name, prop in schema.get("properties", {}).items():
+            # Single file: type=string, contentMediaType=...
+            if (
+                prop.get("type") == "string"
+                and prop.get("contentMediaType") == "application/octet-stream"
+            ):
+                prop.pop("contentMediaType", None)
+                prop["format"] = "binary"
+
+            # Multiple files: type=array, items.contentMediaType=...
+            elif prop.get("type") == "array":
+                items = prop.get("items", {})
+                if items.get("contentMediaType") == "application/octet-stream":
+                    # Replace items entirely so Swagger UI renders multi-file
+                    prop["items"] = {"type": "string", "format": "binary"}
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
