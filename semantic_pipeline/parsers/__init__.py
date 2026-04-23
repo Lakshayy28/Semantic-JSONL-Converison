@@ -9,7 +9,7 @@ dicts that the SemanticRouter converts into ChunkRecords.
 
 from .excel_parser import ExcelParser
 from .markdown_parser import MarkdownParser
+from .structured_parser import StructuredParser
 from .word_parser import WordParser
 
-__all__ = ["ExcelParser", "MarkdownParser", "WordParser"]
-
+__all__ = ["ExcelParser", "MarkdownParser", "StructuredParser", "WordParser"]

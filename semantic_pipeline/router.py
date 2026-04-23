@@ -5,8 +5,11 @@ Routes incoming files to the correct format-specific parser based on
 file extension.  Each parser is responsible for producing a list of
 ChunkRecord objects, which are then fed to the JSONLEmitter.
 
-Phase 3: MarkdownParser, WordParser, and ExcelParser are live.
-         OpenAPIParser remains stubbed for Phase 4.
+All parsers are fully operational:
+  • MarkdownParser   → .md, .txt
+  • WordParser        → .docx
+  • ExcelParser       → .xlsx, .xls
+  • StructuredParser  → .json, .yaml, .yml
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from .emitter import JSONLEmitter
 from .models import ChunkRecord, EmitterConfig
 from .parsers.excel_parser import ExcelParser
 from .parsers.markdown_parser import MarkdownParser
+from .parsers.structured_parser import StructuredParser
 from .parsers.word_parser import WordParser
 
 logger = logging.getLogger(__name__)
@@ -33,9 +37,9 @@ SUPPORTED_EXTENSIONS = {
     ".xls": "ExcelParser",
     ".docx": "WordParser",
     ".md": "MarkdownParser",
-    ".json": "OpenAPIParser",
-    ".yaml": "OpenAPIParser",
-    ".yml": "OpenAPIParser",
+    ".json": "StructuredParser",
+    ".yaml": "StructuredParser",
+    ".yml": "StructuredParser",
     ".txt": "MarkdownParser",  # plain text treated as headerless markdown
 }
 
@@ -48,8 +52,7 @@ class SemanticRouter:
       3. Collect ChunkRecords from the parser.
       4. Feed them to the JSONLEmitter.
 
-    Phase 3: MarkdownParser, WordParser, and ExcelParser are live.
-             OpenAPIParser returns empty (stub).
+    All parsers are fully operational. No stubs remain.
     """
 
     def __init__(self, config: EmitterConfig) -> None:
@@ -58,10 +61,11 @@ class SemanticRouter:
         self._skipped_files: List[str] = []
         self._processed_files: List[str] = []
 
-        # ── Lazy-init parser instances ──────────────────────────────
+        # ── Parser instances ────────────────────────────────────
         self._md_parser = MarkdownParser()
         self._word_parser = WordParser()
         self._excel_parser = ExcelParser()
+        self._structured_parser = StructuredParser()
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -133,27 +137,25 @@ class SemanticRouter:
     def _dispatch(self, parser_name: str, file_path: Path) -> List[ChunkRecord]:
         """
         Dispatch to the correct parser and convert results to ChunkRecords.
-
-        Phase 3: MarkdownParser, WordParser, and ExcelParser are wired.
-        Phase 4: OpenAPIParser remains stubbed.
+        All file types are fully supported.
         """
-        raw_chunks: List[Dict[str, str]] = []
+        parser_map = {
+            "MarkdownParser": lambda: self._md_parser.parse_file(str(file_path)),
+            "WordParser": lambda: self._word_parser.parse_file(str(file_path)),
+            "ExcelParser": lambda: self._excel_parser.parse_file(str(file_path)),
+            "StructuredParser": lambda: self._structured_parser.parse_file(str(file_path)),
+        }
 
-        if parser_name == "MarkdownParser":
-            raw_chunks = self._md_parser.parse_file(str(file_path))
-        elif parser_name == "WordParser":
-            raw_chunks = self._word_parser.parse_file(str(file_path))
-        elif parser_name == "ExcelParser":
-            raw_chunks = self._excel_parser.parse_file(str(file_path))
-        else:
-            # TODO Phase 4: Wire OpenAPIParser
-            logger.warning(
-                "Parser '%s' is not yet implemented (stub). "
-                "File skipped: %s",
+        parser_fn = parser_map.get(parser_name)
+        if parser_fn is None:
+            logger.error(
+                "Unknown parser '%s' for file: %s",
                 parser_name,
                 file_path,
             )
             return []
+
+        raw_chunks = parser_fn()
 
         # ── Convert parser dicts → ChunkRecords ────────────────────
         return self._to_chunk_records(raw_chunks, file_path)

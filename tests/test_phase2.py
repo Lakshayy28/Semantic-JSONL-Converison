@@ -518,10 +518,10 @@ class TestSemanticRouterPhase2:
         assert any("test.md" in f for f in summary["processed_files"])
         assert any("test_architecture.docx" in f for f in summary["processed_files"])
 
-    def test_router_openapi_still_stubbed(self, tmp_path: Path):
-        """.json/.yaml files should still be skipped (stub) until Phase 4."""
-        yaml_file = tmp_path / "spec.yaml"
-        yaml_file.write_text("openapi: '3.0.0'")
+    def test_router_yaml_now_processed(self, tmp_path: Path):
+        """.yaml files should now be processed by StructuredParser."""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text("database:\n  host: localhost\n  port: 5432\n")
 
         output_dir = tmp_path / "output"
         config = EmitterConfig(output_dir=str(output_dir))
@@ -529,7 +529,8 @@ class TestSemanticRouterPhase2:
         with SemanticRouter(config) as router:
             chunks = router.ingest_file(str(yaml_file))
 
-        assert chunks == []
+        # Generic YAML → should produce at least 1 chunk via fallback
+        assert len(chunks) >= 1
 
     def test_router_plain_text_uses_markdown_parser(self, tmp_path: Path):
         """Plain .txt files should be routed through MarkdownParser."""

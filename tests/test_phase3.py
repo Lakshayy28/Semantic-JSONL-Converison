@@ -492,10 +492,21 @@ class TestSemanticRouterPhase3:
         assert len(summary["processed_files"]) == 1
         assert "simple.xlsx" in summary["processed_files"][0]
 
-    def test_openapi_still_stubbed(self, tmp_path: Path):
-        """.json/.yaml files should still be skipped until Phase 4."""
+    def test_json_now_processed_by_structured_parser(self, tmp_path: Path):
+        """.json files should now be processed by StructuredParser."""
         json_file = tmp_path / "api.json"
-        json_file.write_text('{"openapi": "3.0.0"}')
+        json_file.write_text(json.dumps({
+            "openapi": "3.0.0",
+            "info": {"title": "Test API", "version": "1.0"},
+            "paths": {
+                "/health": {
+                    "get": {
+                        "summary": "Health check",
+                        "responses": {"200": {"description": "OK"}}
+                    }
+                }
+            }
+        }))
 
         output_dir = tmp_path / "output"
         config = EmitterConfig(output_dir=str(output_dir))
@@ -503,7 +514,8 @@ class TestSemanticRouterPhase3:
         with SemanticRouter(config) as router:
             chunks = router.ingest_file(str(json_file))
 
-        assert chunks == []
+        assert len(chunks) >= 1
+        assert any("GET /health" in c.raw_context for c in chunks)
 
 
 # ═══════════════════════════════════════════════════════════════════

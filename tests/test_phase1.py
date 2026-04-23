@@ -346,18 +346,19 @@ class TestSemanticRouter:
 
         assert chunks == []
 
-    def test_ingest_stub_returns_empty_for_unimplemented(
+    def test_all_parsers_operational(
         self, tmp_output_dir: Path, tmp_path: Path
     ):
-        """Parsers not yet implemented (OpenAPI) should return empty."""
-        json_file = tmp_path / "spec.json"
-        json_file.write_text('{"openapi": "3.0.0"}')
+        """All registered extensions now have live parsers — verify .json works."""
+        json_file = tmp_path / "config.json"
+        json_file.write_text('{"key": "value", "num": 42}')
 
         config = EmitterConfig(output_dir=str(tmp_output_dir))
         with SemanticRouter(config) as router:
             chunks = router.ingest_file(str(json_file))
 
-        assert chunks == []
+        # Generic JSON should produce at least 1 chunk via fallback
+        assert len(chunks) >= 1
 
     def test_ingest_directory_missing_raises(self, tmp_output_dir: Path):
         """Pointing at a non-existent directory should raise FileNotFoundError."""
