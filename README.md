@@ -1,70 +1,169 @@
 # Semantic JSONL Conversion Pipeline
 
-This project features an automated pipeline built to parse enterprise-grade artifacts (e.g., Markdown, Word Documents, Excel rulesets, YAML/JSON API specifications) and systematically convert them into structured JSONL format intended for LLM semantic search, fine-tuning, or RAG downstream processing. 
+A local, production-grade file ingestion and semantic chunking pipeline that converts heterogeneous enterprise files (`.xlsx`, `.docx`, `.md`, `.txt`, `.json`, `.yaml`) into structured JSONL format for RAG (Retrieval-Augmented Generation) downstream processing.
 
-Included in the latest updates is a suite of scripts that automatically scaffold complex test environments mimicking real-world structures. Specifically, it simulates a **Credit Decisioning Underwriting Microservice**.
+The downstream ingestion API calculates **768-dimensional embeddings** exclusively on a field called `raw_context`. The pipeline's semantic chunking strategies are designed to preserve hierarchical and tabular context boundaries — never using blind character splitting that would destroy document structure.
 
 ## 🏗 System Architecture
 
-The pipeline consists of the following core components:
+```
+semantic_pipeline/
+├── models.py                    # ChunkRecord (Pydantic) + EmitterConfig
+├── emitter.py                   # JSONLEmitter with 9.5MB pre-check rollover
+├── router.py                    # SemanticRouter — extension-based dispatcher
+└── parsers/
+    ├── markdown_parser.py       # Header-aware chunking with breadcrumb stitching
+    ├── word_parser.py           # DOCX → Markdown conversion, then header chunking
+    ├── excel_parser.py          # Merged-cell unrolling + row-level stringification
+    └── structured_parser.py     # OpenAPI/Swagger endpoint bundling + generic fallback
+```
 
-* **Router (`semantic_pipeline/router.py`)**: Resolves file extensions to specific specialized parsers. This is the main entry point to process a file or a batch of files.
-* **Parsers (`semantic_pipeline/parsers/`)**: Contains logic tailored to exact document formats:
-  * `word_parser.py`: Extracts docx structured headings, paragraphs, and embedded tables.
-  * `excel_parser.py`: Iterates complex multi-sheet Excel files mapping cells to respective endpoint definitions. Note: Images are currently ignored.
-  * `markdown_parser.py`: Uses `langchain_text_splitters` to securely segment Markdown text based on structural headings and paragraphs without losing context.
-  * `structured_parser.py`: Maps OpenAPI JSON/YAML to endpoint definitions recursively.
-* **Models (`semantic_pipeline/models.py`)**: Defines strict `Pydantic` validation schemas. Guarantees consistency of extracted chunks.
-* **Emitter (`semantic_pipeline/emitter.py`)**: Serializes everything into validated `JSONL` strings, generating an easily ingestible data artifact.
+### Core Components
 
-## 🚀 How to Use It?
+* **SemanticRouter** (`router.py`): The main entry point. Resolves file extensions to specialized parsers, collects `ChunkRecord` objects, and feeds them to the `JSONLEmitter`. Supports both single-file and directory-level ingestion.
+
+* **Parsers** (`parsers/`): Format-specific semantic chunking logic:
+
+  | Parser | Extensions | Strategy |
+  |---|---|---|
+  | `MarkdownParser` | `.md`, `.txt` | Header-aware splitting via LangChain's `MarkdownHeaderTextSplitter`. Stitches header breadcrumbs (e.g., `Section: H1 > H2 > H3`) into `raw_context`. Falls back to `RecursiveCharacterTextSplitter` for oversized sections with 10% overlap. |
+  | `WordParser` | `.docx` | Converts DOCX heading styles (Title, Heading 1–4) to Markdown syntax, then delegates to `MarkdownParser` for unified semantic chunking. |
+  | `ExcelParser` | `.xlsx`, `.xls` | Uses `openpyxl` to unmerge all merged cells (propagating the top-left value to every spanned cell), writes to an in-memory `BytesIO` buffer, then uses `pandas` for row-level iteration. Each row becomes: `[Sheet: <name>] [<col>: <val>] ...`. Empty rows are dropped; `NaN` values are omitted. |
+  | `StructuredParser` | `.json`, `.yaml`, `.yml` | Detects OpenAPI/Swagger specs via top-level keys (`openapi`, `swagger`). For API specs, produces one chunk per endpoint bundling Method + Path + Summary + Parameters + Request Body + Responses. For generic JSON/YAML, falls back to `RecursiveCharacterTextSplitter`. |
+
+* **ChunkRecord** (`models.py`): Pydantic model enforcing the strict JSONL schema — validates non-empty fields, MM/DD/YYYY date format, and auto-generates unique `chunk_id` values.
+
+* **JSONLEmitter** (`emitter.py`): Serializes `ChunkRecord` objects to `.jsonl` files with **pre-check rollover logic** — measures chunk byte size *before* writing to ensure no file ever exceeds the 9.5 MB threshold (500 KB safety margin against the 10 MB API limit). Raises `ValueError` if a single chunk exceeds the limit.
+
+### JSONL Output Schema
+
+Each line in the output `.jsonl` files conforms to:
+
+```json
+{
+  "usecase_id": "string",
+  "document_id": "string",
+  "chunk_id": "chunk-<12-hex-chars>",
+  "raw_context": "string (embedding target)",
+  "file_name": "string",
+  "data_classification": "string",
+  "sor_last_modified": "MM/DD/YYYY",
+  "identifier": "string"
+}
+```
+
+## 🚀 How to Use It
 
 ### 1. Installation
 
-Set up your Python virtual environment and run:
+Set up a Python 3.10+ virtual environment and install dependencies:
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Generating Sample Credit Microservice Data
+### 2. Generating Sample Data
 
-If you need data to test with, you can run the artifact generator. This constructs multiple Excel, Word, Markdown, and YAML spec files for an imaginary Credit Underwriting Engine:
+To generate test artifacts simulating a Credit Decisioning Underwriting Microservice (Excel rulesets, Word architecture docs, Markdown guides, OpenAPI specs):
+
 ```bash
 python generate_credit_artifacts.py
 ```
 
-### 3. Converting Files via the Pipeline
-
-The conversion functions act locally on individual files or directories without requiring an external HTTP server, though they can easily be wrapped inside FastAPI or Flask if API endpoints are desired.
-
-To convert a file, you typically initialize the router, process the document, and consume the emitter in Python. Here exists a hypothetical script utilizing the `semantic_pipeline`:
+### 3. Running the Pipeline
 
 ```python
-from semantic_pipeline.router import DocumentRouter
-from pathlib import Path
+from semantic_pipeline.models import EmitterConfig
+from semantic_pipeline.router import SemanticRouter
 
-# Initialize pipeline
-router = DocumentRouter()
-input_file = Path("sample_complex.docx")
+config = EmitterConfig(
+    output_dir="./output",
+    usecase_id="credit-decisioning",
+    identifier="underwriting-team",
+)
 
-# Parse document into Pydantic SemanticChunks
-extracted_chunks = router.process_file(input_file)
+# Process a single file
+with SemanticRouter(config) as router:
+    chunks = router.ingest_file("artifacts/credit_decisioning_openapi.yaml")
+    print(f"Produced {len(chunks)} chunks")
 
-# Emit to JSONL
-from semantic_pipeline.emitter import JSONLEmitter
-emitter = JSONLEmitter()
-emitter.write_to_file(extracted_chunks, "output_chunks.jsonl")
+# Or process an entire directory
+with SemanticRouter(config) as router:
+    summary = router.ingest_directory("./artifacts")
+    print(summary)
 ```
 
-## 🌐 Are there any HTTP Endpoints?
+The `EmitterConfig` supports customization:
 
-**No** — the current architecture is built as an underlying **SDK/Library**, intended to be executed from a CLI script, a Cron job, or embedded directly inside another service. 
+```python
+config = EmitterConfig(
+    output_dir="./output",          # Where .jsonl files are written
+    usecase_id="my-usecase",        # Required: business use-case ID
+    base_filename="chunks",         # Output file prefix (default: "chunks")
+    max_file_bytes=9_500_000,       # Rollover threshold (default: 9.5 MB)
+    data_classification="internal", # Data sensitivity label
+    identifier="team-name",        # Team or system identifier
+)
+```
 
-If you require REST/HTTP endpoints, you can wrap `semantic_pipeline.router` inside a FastAPI application by creating a simple POST `/convert` endpoint that accepts a file upload, processes it using `DocumentRouter.process_file(uploaded_file)`, and returns the raw JSONL via a streaming response or text blob.
+## 🌐 Are There HTTP Endpoints?
+
+**No** — this is an **SDK/Library** intended to be executed from a CLI script, a cron job, or embedded inside another service. If you need REST/HTTP endpoints, wrap `SemanticRouter` inside a FastAPI application with a POST `/convert` endpoint that accepts file uploads.
 
 ## 🧪 Testing
 
-To verify the components, you can trigger the suite of pytests checking each parsing phase:
+The pipeline has a comprehensive **106-test suite** organized by phase:
+
 ```bash
-pytest tests/
+# Run the full suite
+pytest tests/ -v
+
+# Run a specific phase
+pytest tests/test_phase1.py -v   # 21 tests — Models, Emitter, Router foundation
+pytest tests/test_phase2.py -v   # 26 tests — Markdown, DOCX, header stitching
+pytest tests/test_phase3.py -v   # 19 tests — Excel, merged cells, NaN handling
+pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallback
 ```
+
+### What's Tested
+
+| Area | Coverage |
+|---|---|
+| Schema validation | Non-empty fields, date format, chunk ID uniqueness |
+| JSONL rollover | Pre-check byte measurement, 9.5 MB cap enforcement, sequential file naming |
+| Header stitching | Breadcrumb paths, recursive fallback overlap verification |
+| DOCX conversion | Heading style → Markdown mapping, round-trip through MarkdownParser |
+| Merged cells | Single-column merges, multi-dimensional block merges, value propagation |
+| Data cleaning | Empty row removal, NaN omission, column-header context injection |
+| API spec detection | OpenAPI 3.x, Swagger 2.0, generic fallback, invalid input handling |
+| Endpoint bundling | Method, Path, Summary, Parameters, Request Body, Responses extraction |
+| Real artifacts | Tests against actual workspace files (skipped if unavailable) |
+
+## 📦 Dependencies
+
+### Pipeline (Core)
+
+| Package | Purpose |
+|---|---|
+| `pydantic>=2.0.0` | Schema validation for `ChunkRecord` and `EmitterConfig` |
+| `langchain-text-splitters>=0.2.0` | `MarkdownHeaderTextSplitter` and `RecursiveCharacterTextSplitter` |
+| `pandas` | Tabular data iteration for Excel parsing |
+| `openpyxl` | Excel file I/O and merged cell resolution |
+| `python-docx` | DOCX paragraph and heading extraction |
+| `PyYAML` | YAML file parsing |
+
+### Testing
+
+| Package | Purpose |
+|---|---|
+| `pytest>=8.0.0` | Test framework |
+
+### Artifact Generation (`generate_credit_artifacts.py`)
+
+| Package | Purpose |
+|---|---|
+| `matplotlib` | Chart generation for sample Excel artifacts |
+| `Pillow` | Image handling dependency for matplotlib |
+| `XlsxWriter` | Excel file creation for sample artifacts |
