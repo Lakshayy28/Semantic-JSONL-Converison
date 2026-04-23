@@ -120,6 +120,83 @@ class SemanticRouter:
 
         return chunks
 
+    def ingest_file_unchunked(self, file_path: str) -> List[ChunkRecord]:
+        """
+        Bypass chunking: extract clean text via the parser, then emit
+        exactly **one** ChunkRecord containing the entire document.
+
+        The parsers still run (e.g., DOCX → Markdown, Excel unmerge,
+        $ref resolution) but instead of splitting into multiple chunks,
+        all parsed output is aggregated into a single `raw_context`.
+
+        The chunk_id is set to ``{document_id}-full`` for traceability.
+
+        Returns:
+            List with exactly 1 ChunkRecord (or empty if nothing parsed).
+        """
+        path = Path(file_path)
+        ext = path.suffix.lower()
+
+        if ext not in SUPPORTED_EXTENSIONS:
+            logger.warning("Unsupported file extension '%s': %s", ext, file_path)
+            self._skipped_files.append(file_path)
+            return []
+
+        parser_name = SUPPORTED_EXTENSIONS[ext]
+        logger.info("Unchunked routing %s → %s", file_path, parser_name)
+
+        # ── Run the parser to get clean extracted text fragments ────
+        parser_map = {
+            "MarkdownParser": lambda: self._md_parser.parse_file(str(path)),
+            "WordParser": lambda: self._word_parser.parse_file(str(path)),
+            "ExcelParser": lambda: self._excel_parser.parse_file(str(path)),
+            "StructuredParser": lambda: self._structured_parser.parse_file(str(path)),
+        }
+
+        parser_fn = parser_map.get(parser_name)
+        if parser_fn is None:
+            logger.error("Unknown parser '%s' for file: %s", parser_name, file_path)
+            return []
+
+        raw_chunks = parser_fn()
+
+        if not raw_chunks:
+            logger.info("No content parsed for %s — skipping.", file_path)
+            self._skipped_files.append(file_path)
+            return []
+
+        # ── Aggregate all chunk texts into one raw_context ─────────
+        combined = "\n\n".join(
+            chunk.get("raw_context", "").strip()
+            for chunk in raw_chunks
+            if chunk.get("raw_context", "").strip()
+        )
+
+        if not combined:
+            self._skipped_files.append(file_path)
+            return []
+
+        doc_id = f"doc-{uuid.uuid4().hex[:8]}"
+        record = ChunkRecord(
+            usecase_id=self._config.usecase_id,
+            document_id=doc_id,
+            chunk_id=f"{doc_id}-full",
+            raw_context=combined,
+            file_name=path.name,
+            data_classification=self._config.data_classification,
+            identifier=self._config.identifier,
+        )
+
+        self._emitter.emit(record)
+        self._processed_files.append(file_path)
+        logger.info(
+            "Emitted 1 unchunked record (%d chars) from %s",
+            len(combined),
+            path.name,
+        )
+
+        return [record]
+
     def close(self) -> None:
         """Finalize the emitter and flush all output."""
         self._emitter.close()

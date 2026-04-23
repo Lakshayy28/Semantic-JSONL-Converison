@@ -96,36 +96,84 @@ class WordParser:
     @staticmethod
     def _docx_to_markdown(doc: Document) -> str:
         """
-        Walk all paragraphs in a Word document and produce a
-        well-formed Markdown string.
+        Walk all body elements in a Word document (paragraphs AND tables)
+        in document order and produce a well-formed Markdown string.
 
         Rules:
           • Heading paragraphs → `# heading text` (with correct level)
           • Body paragraphs → plain text separated by blank lines
           • Empty paragraphs → ignored (collapse whitespace)
           • List items → prefixed with "- " for bullet-style
+          • Tables → converted to Markdown table syntax:
+              | Col1 | Col2 |
+              |---|---|
+              | Val1 | Val2 |
         """
+        from docx.table import Table as DocxTable
+        from docx.text.paragraph import Paragraph
+
         lines: List[str] = []
 
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if not text:
-                continue
+        # Iterate the document body in element order so that tables
+        # appear at their correct position relative to paragraphs.
+        for element in doc.element.body:
+            tag = element.tag.split("}")[-1]  # strip namespace
 
-            style_name = para.style.name if para.style else ""
+            if tag == "p":
+                para = Paragraph(element, doc)
+                text = para.text.strip()
+                if not text:
+                    continue
 
-            if style_name in HEADING_STYLE_MAP:
-                prefix = HEADING_STYLE_MAP[style_name]
-                # Ensure a blank line before headings for clean Markdown
-                if lines and lines[-1] != "":
-                    lines.append("")
-                lines.append(f"{prefix} {text}")
-                lines.append("")  # blank line after heading
-            elif style_name.startswith("List"):
-                # Treat any list-style paragraph as a bullet
-                lines.append(f"- {text}")
-            else:
-                lines.append(text)
-                lines.append("")  # paragraph spacing
+                style_name = para.style.name if para.style else ""
+
+                if style_name in HEADING_STYLE_MAP:
+                    prefix = HEADING_STYLE_MAP[style_name]
+                    if lines and lines[-1] != "":
+                        lines.append("")
+                    lines.append(f"{prefix} {text}")
+                    lines.append("")  # blank line after heading
+                elif style_name.startswith("List"):
+                    lines.append(f"- {text}")
+                else:
+                    lines.append(text)
+                    lines.append("")  # paragraph spacing
+
+            elif tag == "tbl":
+                table = DocxTable(element, doc)
+                md_table = WordParser._table_to_markdown(table)
+                if md_table:
+                    if lines and lines[-1] != "":
+                        lines.append("")
+                    lines.append(md_table)
+                    lines.append("")  # spacing after table
 
         return "\n".join(lines).strip() + "\n"
+
+    @staticmethod
+    def _table_to_markdown(table) -> str:
+        """
+        Convert a python-docx Table object into Markdown table syntax.
+
+        Example output:
+            | Name | Score | Grade |
+            |---|---|---|
+            | Alice | 95 | A |
+            | Bob | 88 | B |
+        """
+        rows = table.rows
+        if not rows:
+            return ""
+
+        md_rows: List[str] = []
+
+        for i, row in enumerate(rows):
+            cells = [cell.text.strip().replace("|", "\\|") for cell in row.cells]
+            md_rows.append("| " + " | ".join(cells) + " |")
+
+            # Add separator after the first row (header)
+            if i == 0:
+                md_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
+
+        return "\n".join(md_rows)
+

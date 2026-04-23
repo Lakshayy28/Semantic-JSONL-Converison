@@ -27,16 +27,16 @@ The downstream ingestion API calculates **768-dimensional embeddings** exclusive
 
 ### Core Components
 
-* **SemanticRouter** (`router.py`): The main entry point. Resolves file extensions to specialized parsers, collects `ChunkRecord` objects, and feeds them to the `JSONLEmitter`. Supports both single-file and directory-level ingestion.
+* **SemanticRouter** (`router.py`): The main entry point. Resolves file extensions to specialized parsers, collects `ChunkRecord` objects, and feeds them to the `JSONLEmitter`. Supports single-file ingestion (`ingest_file`), directory-level ingestion (`ingest_directory`), and **unchunked whole-file mode** (`ingest_file_unchunked`) which emits exactly one record per file.
 
 * **Parsers** (`parsers/`): Format-specific semantic chunking logic:
 
   | Parser | Extensions | Strategy |
   |---|---|---|
   | `MarkdownParser` | `.md`, `.txt` | Header-aware splitting via LangChain's `MarkdownHeaderTextSplitter`. Stitches header breadcrumbs (e.g., `Section: H1 > H2 > H3`) into `raw_context`. Falls back to `RecursiveCharacterTextSplitter` for oversized sections with 10% overlap. |
-  | `WordParser` | `.docx` | Converts DOCX heading styles (Title, Heading 1–4) to Markdown syntax, then delegates to `MarkdownParser` for unified semantic chunking. |
+  | `WordParser` | `.docx` | Converts DOCX heading styles (Title, Heading 1–4) to Markdown syntax. **Extracts Word tables** into Markdown table syntax (`\| Header \| ... \|` with separator row). Delegates to `MarkdownParser` for unified semantic chunking. |
   | `ExcelParser` | `.xlsx`, `.xls` | Uses `openpyxl` to unmerge all merged cells (propagating the top-left value to every spanned cell), writes to an in-memory `BytesIO` buffer, then uses `pandas` for row-level iteration. Each row becomes: `[Sheet: <name>] [<col>: <val>] ...`. Empty rows are dropped; `NaN` values are omitted. |
-  | `StructuredParser` | `.json`, `.yaml`, `.yml` | Detects OpenAPI/Swagger specs via top-level keys (`openapi`, `swagger`). For API specs, produces one chunk per endpoint bundling Method + Path + Summary + Parameters + Request Body + Responses. For generic JSON/YAML, falls back to `RecursiveCharacterTextSplitter`. |
+  | `StructuredParser` | `.json`, `.yaml`, `.yml` | Detects OpenAPI/Swagger specs via top-level keys (`openapi`, `swagger`). **Resolves all `$ref` pointers** via `jsonref` before traversal, inlining schema properties into the chunk context. For API specs, produces one chunk per endpoint bundling Method + Path + Summary + Parameters + Schema Fields + Responses. For generic JSON/YAML, falls back to `RecursiveCharacterTextSplitter`. |
 
 * **ChunkRecord** (`models.py`): Pydantic model enforcing the strict JSONL schema — validates non-empty fields, MM/DD/YYYY date format, and auto-generates unique `chunk_id` values.
 
@@ -133,7 +133,8 @@ The interactive Swagger docs are available at **http://localhost:8000/docs**.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check — lists supported extensions |
-| `POST` | `/convert` | Upload a single file → JSONL conversion |
+| `POST` | `/convert` | Upload a single file → JSONL conversion (chunked) |
+| `POST` | `/convert/unchunked` | Upload a single file → **one** JSONL record (whole-file mode) |
 | `POST` | `/convert/batch` | Upload multiple files → batch JSONL conversion |
 | `GET` | `/files` | List all generated JSONL output files |
 | `GET` | `/files/{filename}` | Download a specific JSONL file |
@@ -167,11 +168,17 @@ curl http://localhost:8000/files
 curl -O http://localhost:8000/files/decision_controller_rules_001.jsonl
 ```
 
+**Unchunked (whole-file) conversion:**
+```bash
+curl -X POST "http://localhost:8000/convert/unchunked?usecase_id=credit-decisioning" \
+  -F "file=@artifacts/credit_decisioning_openapi.yaml"
+```
+
 For a full end-to-end test report covering all 5 workspace artifacts (126 chunks across all file types), see [`artifact_conversion_report.md`](artifact_conversion_report.md).
 
 ## 🧪 Testing
 
-The pipeline has a comprehensive **106-test suite** organized by phase:
+The pipeline has a comprehensive **131-test suite** organized by phase:
 
 ```bash
 # Run the full suite
@@ -182,6 +189,7 @@ pytest tests/test_phase1.py -v   # 21 tests — Models, Emitter, Router foundati
 pytest tests/test_phase2.py -v   # 26 tests — Markdown, DOCX, header stitching
 pytest tests/test_phase3.py -v   # 19 tests — Excel, merged cells, NaN handling
 pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallback
+pytest tests/test_phase5.py -v   # 25 tests — Unchunked mode, $ref resolution, table extraction
 ```
 
 ### What's Tested
@@ -192,10 +200,13 @@ pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallbac
 | JSONL rollover | Pre-check byte measurement, 9.5 MB cap enforcement, sequential file naming |
 | Header stitching | Breadcrumb paths, recursive fallback overlap verification |
 | DOCX conversion | Heading style → Markdown mapping, round-trip through MarkdownParser |
+| DOCX tables | Word table → Markdown table syntax, header/data row extraction |
 | Merged cells | Single-column merges, multi-dimensional block merges, value propagation |
 | Data cleaning | Empty row removal, NaN omission, column-header context injection |
 | API spec detection | OpenAPI 3.x, Swagger 2.0, generic fallback, invalid input handling |
 | Endpoint bundling | Method, Path, Summary, Parameters, Request Body, Responses extraction |
+| `$ref` resolution | Schema field inlining, required-field tagging, no `$ref` strings in output |
+| Unchunked mode | Single-record per file, chunk_id `{doc_id}-full`, cross-format support |
 | Real artifacts | Tests against actual workspace files (skipped if unavailable) |
 
 ## 📦 Dependencies
@@ -208,8 +219,9 @@ pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallbac
 | `langchain-text-splitters>=0.2.0` | `MarkdownHeaderTextSplitter` and `RecursiveCharacterTextSplitter` |
 | `pandas` | Tabular data iteration for Excel parsing |
 | `openpyxl` | Excel file I/O and merged cell resolution |
-| `python-docx` | DOCX paragraph and heading extraction |
+| `python-docx` | DOCX paragraph, heading, and table extraction |
 | `PyYAML` | YAML file parsing |
+| `jsonref>=1.0.0` | OpenAPI `$ref` pointer resolution |
 
 ### API Server
 

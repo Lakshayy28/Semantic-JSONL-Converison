@@ -196,6 +196,61 @@ async def convert_file(
             temp_path.unlink()
 
 
+@app.post("/convert/unchunked", response_model=ConvertResponse, tags=["Conversion"])
+async def convert_file_unchunked(
+    file: UploadFile = File(..., description="File to convert (whole-file mode)"),
+    usecase_id: str = Query("default", description="Business use-case identifier"),
+    identifier: str = Query("api-upload", description="Team or system identifier"),
+    data_classification: str = Query("internal", description="Data sensitivity label"),
+):
+    """
+    Upload a file and emit exactly **one** JSONL record containing the entire
+    parsed content (no chunking). Useful when the downstream model can handle
+    full-document context windows.
+
+    The parsers still clean the data (DOCX→Markdown, Excel unmerge, $ref resolve)
+    but all output is aggregated into a single `raw_context`.
+    """
+    ext = Path(file.filename).suffix.lower()
+    if ext not in SUPPORTED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Supported: {SUPPORTED}",
+        )
+
+    temp_path = _save_upload(file)
+
+    try:
+        start = time.perf_counter()
+
+        stem = Path(file.filename).stem
+        config = EmitterConfig(
+            output_dir=str(JSONL_OUTPUT_DIR),
+            base_filename=f"{stem}_unchunked",
+            usecase_id=usecase_id,
+            identifier=identifier,
+            data_classification=data_classification,
+        )
+
+        with SemanticRouter(config) as router:
+            chunks = router.ingest_file_unchunked(str(temp_path))
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        return ConvertResponse(
+            source_file=file.filename,
+            chunks_produced=len(chunks),
+            jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
+            processing_time_ms=round(elapsed_ms, 2),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 @app.post("/convert/batch", response_model=BatchConvertResponse, tags=["Conversion"])
 async def convert_batch(
     files: List[UploadFile] = File(..., description="Files to convert"),

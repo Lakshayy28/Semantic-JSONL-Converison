@@ -3,8 +3,9 @@ StructuredParser — OpenAPI/Swagger Semantic Endpoint Chunker
 ==============================================================
 Parses .json and .yaml files with smart detection:
 
-  • **API Specs** (OpenAPI/Swagger): Traverses the `paths` object and
-    bundles Method + Path + Summary + Parameters + Request Body +
+  • **API Specs** (OpenAPI/Swagger): Resolves all ``$ref`` pointers
+    via ``jsonref``, then traverses the ``paths`` object and bundles
+    Method + Path + Summary + Parameters + Request Body + Schema +
     Responses into one cohesive chunk per endpoint.
 
   • **Generic JSON/YAML**: Falls back to RecursiveCharacterTextSplitter
@@ -14,6 +15,11 @@ Why not generic JSON splitters?
   Deeply nested arrays (parameters, responses) get orphaned from their
   parent route, destroying the semantic relationship between an endpoint
   and its contract. This parser keeps them bundled together.
+
+Why $ref resolution?
+  Unresolved $ref pointers (e.g. ``$ref: '#/components/schemas/Applicant'``)
+  cause severe context loss — the vector DB sees an empty pointer instead
+  of the actual schema fields. ``jsonref.replace_refs()`` inlines them.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import jsonref
 import yaml
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -148,7 +155,21 @@ class StructuredParser:
         """
         Traverse the `paths` object and produce one chunk per endpoint
         (method + path combination).
+
+        $ref pointers are resolved in-memory before traversal so that
+        schema details (properties, types) are inlined into the chunks.
         """
+        # ── Resolve all $ref pointers ───────────────────────────────
+        try:
+            spec = jsonref.replace_refs(spec)
+            logger.info("Resolved $ref pointers in %s.", source_file)
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve $refs in %s: %s — proceeding unresolved.",
+                source_file,
+                e,
+            )
+
         # Extract API metadata for context
         info = spec.get("info", {})
         api_title = info.get("title", "Unknown API")
@@ -268,6 +289,11 @@ class StructuredParser:
                 content_types = list(request_body["content"].keys())
                 parts.append(f"Request Body ({rb_required}): accepts {', '.join(content_types)}.")
 
+            # Extract resolved schema properties if available
+            schema_props = _extract_schema_properties(request_body)
+            if schema_props:
+                parts.append(f"Schema Fields: {schema_props}.")
+
         # Responses
         responses = operation.get("responses", {})
         if responses:
@@ -317,3 +343,40 @@ class StructuredParser:
             for t in sub_texts
             if t.strip()
         ]
+
+
+# ── Module-level helpers (used by static methods) ─────────────────
+
+def _extract_schema_properties(request_body: dict) -> str:
+    """
+    Walk into requestBody → content → */json → schema → properties
+    and return a human-readable summary of the fields.
+
+    Example output:
+        "name (string, required); age (integer); email (string)"
+    """
+    content = request_body.get("content", {})
+    for media_type, media_obj in content.items():
+        if not isinstance(media_obj, dict):
+            continue
+        schema = media_obj.get("schema", {})
+        if not isinstance(schema, dict):
+            continue
+        properties = schema.get("properties", {})
+        if not properties:
+            continue
+
+        required_fields = set(schema.get("required", []))
+        field_strs = []
+        for field_name, field_info in properties.items():
+            if not isinstance(field_info, dict):
+                continue
+            f_type = field_info.get("type", "")
+            req_label = ", required" if field_name in required_fields else ""
+            field_str = f"{field_name} ({f_type}{req_label})" if f_type else field_name
+            field_strs.append(field_str)
+
+        if field_strs:
+            return "; ".join(field_strs)
+
+    return ""
