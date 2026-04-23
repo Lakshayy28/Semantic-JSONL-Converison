@@ -518,16 +518,16 @@ class TestSemanticRouterPhase2:
         assert any("test.md" in f for f in summary["processed_files"])
         assert any("test_architecture.docx" in f for f in summary["processed_files"])
 
-    def test_router_excel_still_stubbed(self, tmp_path: Path):
-        """.xlsx files should still be skipped (stub) until Phase 3."""
-        xlsx_file = tmp_path / "data.xlsx"
-        xlsx_file.write_bytes(b"fake")  # doesn't need to be valid
+    def test_router_openapi_still_stubbed(self, tmp_path: Path):
+        """.json/.yaml files should still be skipped (stub) until Phase 4."""
+        yaml_file = tmp_path / "spec.yaml"
+        yaml_file.write_text("openapi: '3.0.0'")
 
         output_dir = tmp_path / "output"
         config = EmitterConfig(output_dir=str(output_dir))
 
         with SemanticRouter(config) as router:
-            chunks = router.ingest_file(str(xlsx_file))
+            chunks = router.ingest_file(str(yaml_file))
 
         assert chunks == []
 

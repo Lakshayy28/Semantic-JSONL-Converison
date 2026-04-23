@@ -349,13 +349,13 @@ class TestSemanticRouter:
     def test_ingest_stub_returns_empty_for_unimplemented(
         self, tmp_output_dir: Path, tmp_path: Path
     ):
-        """Parsers not yet implemented (Excel, OpenAPI) should return empty."""
-        xlsx_file = tmp_path / "data.xlsx"
-        xlsx_file.write_bytes(b"fake")
+        """Parsers not yet implemented (OpenAPI) should return empty."""
+        json_file = tmp_path / "spec.json"
+        json_file.write_text('{"openapi": "3.0.0"}')
 
         config = EmitterConfig(output_dir=str(tmp_output_dir))
         with SemanticRouter(config) as router:
-            chunks = router.ingest_file(str(xlsx_file))
+            chunks = router.ingest_file(str(json_file))
 
         assert chunks == []
 
