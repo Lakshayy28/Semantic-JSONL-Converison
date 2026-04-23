@@ -7,15 +7,22 @@ The downstream ingestion API calculates **768-dimensional embeddings** exclusive
 ## 🏗 System Architecture
 
 ```
-semantic_pipeline/
-├── models.py                    # ChunkRecord (Pydantic) + EmitterConfig
-├── emitter.py                   # JSONLEmitter with 9.5MB pre-check rollover
-├── router.py                    # SemanticRouter — extension-based dispatcher
-└── parsers/
-    ├── markdown_parser.py       # Header-aware chunking with breadcrumb stitching
-    ├── word_parser.py           # DOCX → Markdown conversion, then header chunking
-    ├── excel_parser.py          # Merged-cell unrolling + row-level stringification
-    └── structured_parser.py     # OpenAPI/Swagger endpoint bundling + generic fallback
+.
+├── api.py                           # FastAPI REST backend (POST /convert, GET /files, etc.)
+├── generate_credit_artifacts.py     # Sample data generator for testing
+├── artifact_conversion_report.md    # Documented test report of all artifact conversions
+├── artifacts/                       # Source enterprise files for conversion
+├── jsonl/                           # Generated JSONL output files (one per source file)
+├── semantic_pipeline/
+│   ├── models.py                    # ChunkRecord (Pydantic) + EmitterConfig
+│   ├── emitter.py                   # JSONLEmitter with 9.5MB pre-check rollover
+│   ├── router.py                    # SemanticRouter — extension-based dispatcher
+│   └── parsers/
+│       ├── markdown_parser.py       # Header-aware chunking with breadcrumb stitching
+│       ├── word_parser.py           # DOCX → Markdown conversion, then header chunking
+│       ├── excel_parser.py          # Merged-cell unrolling + row-level stringification
+│       └── structured_parser.py     # OpenAPI/Swagger endpoint bundling + generic fallback
+└── tests/                           # 106-test suite (Phases 1–4)
 ```
 
 ### Core Components
@@ -132,13 +139,13 @@ The interactive Swagger docs are available at **http://localhost:8000/docs**.
 | `GET` | `/files/{filename}` | Download a specific JSONL file |
 | `DELETE` | `/files` | Clear all generated JSONL files |
 
-All output `.jsonl` files are written to the `jsonl/` directory.
+All output `.jsonl` files are written to the `jsonl/` directory. Each uploaded file produces its own named JSONL output (e.g., uploading `decision_controller_rules.xlsx` creates `decision_controller_rules_001.jsonl`).
 
 ### Examples
 
 **Convert a single file:**
 ```bash
-curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules" \
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules&identifier=underwriting-team&data_classification=confidential" \
   -F "file=@artifacts/decision_controller_rules.xlsx"
 ```
 
@@ -157,8 +164,10 @@ curl http://localhost:8000/files
 
 **Download a JSONL file:**
 ```bash
-curl -O http://localhost:8000/files/chunks_001.jsonl
+curl -O http://localhost:8000/files/decision_controller_rules_001.jsonl
 ```
+
+For a full end-to-end test report covering all 5 workspace artifacts (126 chunks across all file types), see [`artifact_conversion_report.md`](artifact_conversion_report.md).
 
 ## 🧪 Testing
 
@@ -201,6 +210,14 @@ pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallbac
 | `openpyxl` | Excel file I/O and merged cell resolution |
 | `python-docx` | DOCX paragraph and heading extraction |
 | `PyYAML` | YAML file parsing |
+
+### API Server
+
+| Package | Purpose |
+|---|---|
+| `fastapi>=0.115.0` | REST API framework for file conversion endpoints |
+| `uvicorn[standard]>=0.30.0` | ASGI server to run the FastAPI app |
+| `python-multipart>=0.0.9` | Multipart form data (file uploads) support |
 
 ### Testing
 

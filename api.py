@@ -166,8 +166,11 @@ async def convert_file(
     try:
         start = time.perf_counter()
 
+        # Use source filename as base so each file gets its own JSONL
+        stem = Path(file.filename).stem
         config = EmitterConfig(
             output_dir=str(JSONL_OUTPUT_DIR),
+            base_filename=stem,
             usecase_id=usecase_id,
             identifier=identifier,
             data_classification=data_classification,
@@ -212,6 +215,7 @@ async def convert_batch(
 
     config = EmitterConfig(
         output_dir=str(JSONL_OUTPUT_DIR),
+        base_filename="batch",
         usecase_id=usecase_id,
         identifier=identifier,
         data_classification=data_classification,
