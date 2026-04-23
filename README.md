@@ -9,7 +9,6 @@ The downstream ingestion API calculates **768-dimensional embeddings** exclusive
 ```
 .
 ├── api.py                           # FastAPI REST backend (POST /convert, GET /files, etc.)
-├── generate_credit_artifacts.py     # Sample data generator for testing
 ├── artifact_conversion_report.md    # Documented test report of all artifact conversions
 ├── artifacts/                       # Source enterprise files for conversion
 ├── jsonl/                           # Generated JSONL output files (one per source file)
@@ -75,9 +74,7 @@ pip install -r requirements.txt
 
 To generate test artifacts simulating a Credit Decisioning Underwriting Microservice (Excel rulesets, Word architecture docs, Markdown guides, OpenAPI specs):
 
-```bash
-python generate_credit_artifacts.py
-```
+*Note: The standalone artifact generator script has been removed from the repository. The artifacts should be generated upstream or manually placed in the `artifacts/` folder.*
 
 ### 3. Running the Pipeline
 
@@ -238,10 +235,6 @@ pytest tests/test_phase5.py -v   # 25 tests — Unchunked mode, $ref resolution,
 |---|---|
 | `pytest>=8.0.0` | Test framework |
 
-### Artifact Generation (`generate_credit_artifacts.py`)
+### Artifact Generation
 
-| Package | Purpose |
-|---|---|
-| `matplotlib` | Chart generation for sample Excel artifacts |
-| `Pillow` | Image handling dependency for matplotlib |
-| `XlsxWriter` | Excel file creation for sample artifacts |
+*The standalone artifact generation packages (`matplotlib`, `Pillow`, `XlsxWriter`) have been removed from the repository requirements.*

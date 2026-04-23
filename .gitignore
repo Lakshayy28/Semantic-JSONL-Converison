@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Data directories (keep the folders, ignore their contents)
+artifacts/*
+!artifacts/.gitkeep
+jsonl/*
+!jsonl/.gitkeep
+
 # Virtual environment
 .venv/
 
