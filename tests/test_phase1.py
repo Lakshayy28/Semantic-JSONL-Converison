@@ -346,14 +346,16 @@ class TestSemanticRouter:
 
         assert chunks == []
 
-    def test_ingest_stub_returns_empty(self, tmp_output_dir: Path, tmp_path: Path):
-        """Phase 1 stub parsers should return empty chunk lists."""
-        md_file = tmp_path / "readme.md"
-        md_file.write_text("# Hello\nSome content.")
+    def test_ingest_stub_returns_empty_for_unimplemented(
+        self, tmp_output_dir: Path, tmp_path: Path
+    ):
+        """Parsers not yet implemented (Excel, OpenAPI) should return empty."""
+        xlsx_file = tmp_path / "data.xlsx"
+        xlsx_file.write_bytes(b"fake")
 
         config = EmitterConfig(output_dir=str(tmp_output_dir))
         with SemanticRouter(config) as router:
-            chunks = router.ingest_file(str(md_file))
+            chunks = router.ingest_file(str(xlsx_file))
 
         assert chunks == []
 

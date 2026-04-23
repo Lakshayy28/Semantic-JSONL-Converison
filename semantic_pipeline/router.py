@@ -5,23 +5,27 @@ Routes incoming files to the correct format-specific parser based on
 file extension.  Each parser is responsible for producing a list of
 ChunkRecord objects, which are then fed to the JSONLEmitter.
 
-Phase 1: Stub implementation — parser slots are defined but not yet wired.
-Parsers will be implemented in Phases 2–4.
+Phase 2: MarkdownParser and WordParser are now wired.
+         ExcelParser and OpenAPIParser remain stubbed for Phases 3–4.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .emitter import JSONLEmitter
 from .models import ChunkRecord, EmitterConfig
+from .parsers.markdown_parser import MarkdownParser
+from .parsers.word_parser import WordParser
 
 logger = logging.getLogger(__name__)
 
-# ── File extension → parser mapping (populated in later phases) ────
+# ── File extension → parser mapping ────────────────────────────────
 
 SUPPORTED_EXTENSIONS = {
     ".xlsx": "ExcelParser",
@@ -42,10 +46,8 @@ class SemanticRouter:
       3. Collect ChunkRecords from the parser.
       4. Feed them to the JSONLEmitter.
 
-    Phase 1 Note:
-      Parser implementations are stubbed.  Calling `ingest()` on an
-      unsupported or not-yet-implemented file type will log a warning
-      and skip the file gracefully.
+    Phase 2: MarkdownParser and WordParser are live.
+             ExcelParser and OpenAPIParser return empty (stubs).
     """
 
     def __init__(self, config: EmitterConfig) -> None:
@@ -53,6 +55,10 @@ class SemanticRouter:
         self._emitter = JSONLEmitter(config)
         self._skipped_files: List[str] = []
         self._processed_files: List[str] = []
+
+        # ── Lazy-init parser instances ──────────────────────────────
+        self._md_parser = MarkdownParser()
+        self._word_parser = WordParser()
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -92,7 +98,7 @@ class SemanticRouter:
         parser_name = SUPPORTED_EXTENSIONS[ext]
         logger.info("Routing %s → %s", file_path, parser_name)
 
-        # ── Dispatch to parser (Phase 2–4 implementations) ──────
+        # ── Dispatch to parser ──────────────────────────────────────
         chunks = self._dispatch(parser_name, path)
 
         if chunks:
@@ -123,22 +129,59 @@ class SemanticRouter:
 
     def _dispatch(self, parser_name: str, file_path: Path) -> List[ChunkRecord]:
         """
-        Dispatch to the correct parser.
+        Dispatch to the correct parser and convert results to ChunkRecords.
 
-        Phase 1: All parsers return empty lists (stubs).
-        Phases 2–4 will wire real implementations here.
+        Phase 2: MarkdownParser and WordParser are wired.
+        Phase 3–4: ExcelParser and OpenAPIParser remain stubbed.
         """
-        # TODO Phase 2: Wire MarkdownParser, WordParser
-        # TODO Phase 3: Wire ExcelParser
-        # TODO Phase 4: Wire OpenAPIParser
+        raw_chunks: List[Dict[str, str]] = []
 
-        logger.warning(
-            "Parser '%s' is not yet implemented (Phase 1 stub). "
-            "File skipped: %s",
-            parser_name,
-            file_path,
-        )
-        return []
+        if parser_name == "MarkdownParser":
+            raw_chunks = self._md_parser.parse_file(str(file_path))
+        elif parser_name == "WordParser":
+            raw_chunks = self._word_parser.parse_file(str(file_path))
+        else:
+            # TODO Phase 3: Wire ExcelParser
+            # TODO Phase 4: Wire OpenAPIParser
+            logger.warning(
+                "Parser '%s' is not yet implemented (stub). "
+                "File skipped: %s",
+                parser_name,
+                file_path,
+            )
+            return []
+
+        # ── Convert parser dicts → ChunkRecords ────────────────────
+        return self._to_chunk_records(raw_chunks, file_path)
+
+    def _to_chunk_records(
+        self,
+        raw_chunks: List[Dict[str, str]],
+        file_path: Path,
+    ) -> List[ChunkRecord]:
+        """
+        Convert parser output dicts into fully stamped ChunkRecords
+        using the pipeline config defaults.
+        """
+        doc_id = f"doc-{uuid.uuid4().hex[:8]}"
+        records: List[ChunkRecord] = []
+
+        for chunk_dict in raw_chunks:
+            raw_context = chunk_dict.get("raw_context", "").strip()
+            if not raw_context:
+                continue
+
+            record = ChunkRecord(
+                usecase_id=self._config.usecase_id,
+                document_id=doc_id,
+                raw_context=raw_context,
+                file_name=file_path.name,
+                data_classification=self._config.data_classification,
+                identifier=self._config.identifier,
+            )
+            records.append(record)
+
+        return records
 
     # ── Context Manager ─────────────────────────────────────────────
 
