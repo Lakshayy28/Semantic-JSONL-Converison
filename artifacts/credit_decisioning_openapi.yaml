@@ -1,0 +1,273 @@
+openapi: 3.0.3
+info:
+  title: Credit Decisioning Microservice API
+  description: API for underwriting and credit line increase decisions. Includes rule
+    evaluation, manual review queues, and customer profile integration.
+  version: 2.5.0
+  contact:
+    name: Underwriting Tech Team
+    email: underwriting-tech@bank.com
+servers:
+- url: https://api.bank.com/v1/credit-decisioning
+  description: Production Server
+- url: https://staging-api.bank.com/v1/credit-decisioning
+  description: Staging Server
+tags:
+- name: Application
+  description: Endpoints managing credit line applications
+- name: Decision
+  description: Core decision engine and evaluation logic
+- name: CustomerProfile
+  description: Customer financial profile and bureau data
+- name: RuleEngine
+  description: Underwriting rules management
+- name: Reporting
+  description: Metrics and audit reporting
+paths:
+  /applications:
+    post:
+      tags:
+      - Application
+      summary: Submit a new application
+      responses:
+        '201':
+          description: Application created
+    get:
+      tags:
+      - Application
+      summary: List all applications
+      responses:
+        '200':
+          description: OK
+  /applications/{appId}:
+    get:
+      tags:
+      - Application
+      summary: Get application status
+      responses:
+        '200':
+          description: OK
+    patch:
+      tags:
+      - Application
+      summary: Update application details
+      responses:
+        '200':
+          description: OK
+    delete:
+      tags:
+      - Application
+      summary: Withdraw application
+      responses:
+        '204':
+          description: Withdrawn
+  /applications/{appId}/documents:
+    post:
+      tags:
+      - Application
+      summary: Upload supporting documents (paystubs etc)
+      responses:
+        '202':
+          description: Uploaded
+  /decisions/evaluate:
+    post:
+      tags:
+      - Decision
+      summary: Evaluate an application automatically
+      responses:
+        '200':
+          description: Decision rendered (Approve/Decline/Manual)
+  /decisions/manual-review:
+    get:
+      tags:
+      - Decision
+      summary: Get applications pending manual review
+      responses:
+        '200':
+          description: Queue list
+    post:
+      tags:
+      - Decision
+      summary: Submit manual review decision
+      responses:
+        '200':
+          description: Decision updated
+  /decisions/{decisionId}/override:
+    post:
+      tags:
+      - Decision
+      summary: Override a system decision (Admin only)
+      responses:
+        '200':
+          description: Overridden
+  /decisions/{decisionId}/approve:
+    post:
+      tags:
+      - Decision
+      summary: Force approve an application
+      responses:
+        '200':
+          description: Approved
+  /decisions/{decisionId}/decline:
+    post:
+      tags:
+      - Decision
+      summary: Force decline an application
+      responses:
+        '200':
+          description: Declined
+  /decisions/{decisionId}/request-info:
+    post:
+      tags:
+      - Decision
+      summary: Request more info from applicant
+      responses:
+        '200':
+          description: Status changed to Pending Info
+  /decisions/history/{customerId}:
+    get:
+      tags:
+      - Decision
+      summary: Get decision history for a customer
+      responses:
+        '200':
+          description: History logs
+  /profiles/{customerId}:
+    get:
+      tags:
+      - CustomerProfile
+      summary: Get customer profile
+      responses:
+        '200':
+          description: Profile data
+    put:
+      tags:
+      - CustomerProfile
+      summary: Update profile
+      responses:
+        '200':
+          description: Updated
+  /profiles/{customerId}/income:
+    post:
+      tags:
+      - CustomerProfile
+      summary: Add verified income
+      responses:
+        '200':
+          description: Income added
+  /profiles/{customerId}/identity:
+    post:
+      tags:
+      - CustomerProfile
+      summary: Trigger KYC/Identity verification
+      responses:
+        '200':
+          description: Verified
+  /profiles/{customerId}/bureau:
+    post:
+      tags:
+      - CustomerProfile
+      summary: Pull latest credit bureau report
+      responses:
+        '200':
+          description: Report pulled
+    get:
+      tags:
+      - CustomerProfile
+      summary: Get cached credit score
+      responses:
+        '200':
+          description: Score details
+  /rules:
+    get:
+      tags:
+      - RuleEngine
+      summary: List all active underwriting rules
+      responses:
+        '200':
+          description: Rules list
+    post:
+      tags:
+      - RuleEngine
+      summary: Create a new rule
+      responses:
+        '201':
+          description: Rule created
+  /rules/{ruleId}:
+    get:
+      tags:
+      - RuleEngine
+      summary: Get rule definition
+      responses:
+        '200':
+          description: Rule data
+    put:
+      tags:
+      - RuleEngine
+      summary: Update rule expression
+      responses:
+        '200':
+          description: Rule updated
+    delete:
+      tags:
+      - RuleEngine
+      summary: Disable a rule
+      responses:
+        '204':
+          description: Disabled
+  /rules/simulate:
+    post:
+      tags:
+      - RuleEngine
+      summary: Test a rule against mock data without saving
+      responses:
+        '200':
+          description: Simulation result
+  /reports/metrics:
+    get:
+      tags:
+      - Reporting
+      summary: Get high-level decision metrics (approval rates)
+      responses:
+        '200':
+          description: Metrics
+  /reports/export:
+    get:
+      tags:
+      - Reporting
+      summary: Export decisions to CSV
+      responses:
+        '200':
+          description: CSV stream
+  /reports/audit:
+    get:
+      tags:
+      - Reporting
+      summary: Get compliance audit log
+      responses:
+        '200':
+          description: Audit paginated
+  /reports/kpi:
+    get:
+      tags:
+      - Reporting
+      summary: Get KPI dashboard widget data
+      responses:
+        '200':
+          description: Dashboard JSON
+  /reports/sla:
+    get:
+      tags:
+      - Reporting
+      summary: System SLA and latency stats
+      responses:
+        '200':
+          description: Wait times
+  /reports/fair-lending:
+    get:
+      tags:
+      - Reporting
+      summary: Fair lending compliance check report
+      responses:
+        '200':
+          description: Compliance metrics
