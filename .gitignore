@@ -2,3 +2,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual environment
+.venv/
+
+# Pytest
+.pytest_cache/
+
+# API output & temp files
+jsonl/
+.uploads/

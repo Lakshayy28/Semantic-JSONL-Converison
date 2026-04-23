@@ -6,6 +6,11 @@ openpyxl>=3.1.0
 python-docx>=1.0.0
 PyYAML>=6.0
 
+# ── API Server ──────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
 # ── Testing ─────────────────────────────────────────────────
 pytest>=8.0.0
 

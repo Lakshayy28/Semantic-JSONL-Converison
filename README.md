@@ -108,9 +108,57 @@ config = EmitterConfig(
 )
 ```
 
-## 🌐 Are There HTTP Endpoints?
+## 🌐 REST API (FastAPI)
 
-**No** — this is an **SDK/Library** intended to be executed from a CLI script, a cron job, or embedded inside another service. If you need REST/HTTP endpoints, wrap `SemanticRouter` inside a FastAPI application with a POST `/convert` endpoint that accepts file uploads.
+The pipeline ships with a fully functional FastAPI backend for file conversion via HTTP.
+
+### Starting the Server
+
+```bash
+source .venv/bin/activate
+uvicorn api:app --reload --port 8000
+```
+
+The interactive Swagger docs are available at **http://localhost:8000/docs**.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Health check — lists supported extensions |
+| `POST` | `/convert` | Upload a single file → JSONL conversion |
+| `POST` | `/convert/batch` | Upload multiple files → batch JSONL conversion |
+| `GET` | `/files` | List all generated JSONL output files |
+| `GET` | `/files/{filename}` | Download a specific JSONL file |
+| `DELETE` | `/files` | Clear all generated JSONL files |
+
+All output `.jsonl` files are written to the `jsonl/` directory.
+
+### Examples
+
+**Convert a single file:**
+```bash
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules" \
+  -F "file=@artifacts/decision_controller_rules.xlsx"
+```
+
+**Batch convert multiple files:**
+```bash
+curl -X POST "http://localhost:8000/convert/batch?usecase_id=credit-full" \
+  -F "files=@artifacts/credit_decisioning_openapi.yaml" \
+  -F "files=@artifacts/decision_controller_rules.xlsx" \
+  -F "files=@artifacts/credit_decisioning_swagger.json"
+```
+
+**List output files:**
+```bash
+curl http://localhost:8000/files
+```
+
+**Download a JSONL file:**
+```bash
+curl -O http://localhost:8000/files/chunks_001.jsonl
+```
 
 ## 🧪 Testing
 
