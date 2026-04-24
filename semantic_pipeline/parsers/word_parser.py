@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 from .markdown_parser import MarkdownParser
+from ..vision_client import GeminiVisionClient, DECORATIVE_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +58,13 @@ class WordParser:
         self,
         chunk_size: int = 2000,
         chunk_overlap: int = 200,
+        vision_client: Optional[GeminiVisionClient] = None,
     ) -> None:
         self._md_parser = MarkdownParser(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
+        self._vision_client = vision_client or GeminiVisionClient()
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -75,7 +79,7 @@ class WordParser:
         logger.info("WordParser: Converting %s to Markdown.", path.name)
 
         doc = Document(str(path))
-        markdown_text = self._docx_to_markdown(doc)
+        markdown_text = self._docx_to_markdown(doc, self._vision_client)
 
         logger.debug(
             "Converted %s to %d chars of Markdown.", path.name, len(markdown_text)
@@ -94,10 +98,14 @@ class WordParser:
     # ── Internal: DOCX → Markdown Conversion ────────────────────────
 
     @staticmethod
-    def _docx_to_markdown(doc: Document) -> str:
+    def _docx_to_markdown(
+        doc: Document,
+        vision_client: Optional[GeminiVisionClient] = None,
+    ) -> str:
         """
-        Walk all body elements in a Word document (paragraphs AND tables)
-        in document order and produce a well-formed Markdown string.
+        Walk all body elements in a Word document (paragraphs, tables,
+        and inline images) in document order and produce a well-formed
+        Markdown string.
 
         Rules:
           • Heading paragraphs → `# heading text` (with correct level)
@@ -108,11 +116,15 @@ class WordParser:
               | Col1 | Col2 |
               |---|---|
               | Val1 | Val2 |
+          • Inline images → triaged via GeminiVisionClient;
+            flowcharts are transcribed and injected as
+            [Diagram Transcription: ...]
         """
         from docx.table import Table as DocxTable
         from docx.text.paragraph import Paragraph
 
         lines: List[str] = []
+        last_paragraph_text = ""  # used as surrounding context for images
 
         # Iterate the document body in element order so that tables
         # appear at their correct position relative to paragraphs.
@@ -122,9 +134,40 @@ class WordParser:
             if tag == "p":
                 para = Paragraph(element, doc)
                 text = para.text.strip()
+
+                # ── Check for inline images in this paragraph ──────
+                if vision_client is not None:
+                    for run in para.runs:
+                        inline_shapes = run.element.findall(
+                            './/{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}inline'
+                        )
+                        for inline in inline_shapes:
+                            blip = inline.find(
+                                './/{http://schemas.openxmlformats.org/drawingml/2006/main}blip'
+                            )
+                            if blip is not None:
+                                embed_id = blip.get(
+                                    '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+                                )
+                                if embed_id and embed_id in doc.part.rels:
+                                    image_part = doc.part.rels[embed_id].target_part
+                                    image_bytes = image_part.blob
+                                    transcription = vision_client.transcribe_image(
+                                        image_bytes,
+                                        surrounding_context=last_paragraph_text,
+                                    )
+                                    if transcription != DECORATIVE_MARKER:
+                                        if lines and lines[-1] != "":
+                                            lines.append("")
+                                        lines.append(
+                                            f"[Diagram Transcription: {transcription}]"
+                                        )
+                                        lines.append("")
+
                 if not text:
                     continue
 
+                last_paragraph_text = text
                 style_name = para.style.name if para.style else ""
 
                 if style_name in HEADING_STYLE_MAP:
