@@ -31,6 +31,8 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 
+from ..vision_client import GeminiVisionClient, DECORATIVE_MARKER
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,11 +42,18 @@ class ExcelParser:
 
     Each row in each sheet becomes an independent chunk with full
     column-header context and sheet name injected into raw_context.
+    Images anchored to cells are triaged via GeminiVisionClient.
 
     Usage:
         parser = ExcelParser()
         chunks = parser.parse_file("/path/to/data.xlsx")
     """
+
+    def __init__(
+        self,
+        vision_client: Optional[GeminiVisionClient] = None,
+    ) -> None:
+        self._vision_client = vision_client or GeminiVisionClient()
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -62,6 +71,14 @@ class ExcelParser:
         wb = load_workbook(str(path))
         self._unmerge_all_cells(wb)
 
+        # Step 1b: Extract image anchors per sheet BEFORE closing
+        image_map = self._extract_image_map(wb)
+
+        # Step 1c: Strip images from the workbook so wb.save() won't
+        # try to re-serialise them (their internal BytesIO is closed).
+        for ws in wb.worksheets:
+            ws._images = []
+
         # Step 2: Write cleaned workbook to in-memory buffer
         buffer = io.BytesIO()
         wb.save(buffer)
@@ -74,7 +91,12 @@ class ExcelParser:
         # Step 4: Stringify each row
         chunks: List[Dict[str, str]] = []
         for sheet_name, df in sheets.items():
-            sheet_chunks = self._stringify_sheet(df, sheet_name, path.name)
+            sheet_images = image_map.get(sheet_name, {})
+            sheet_chunks = self._stringify_sheet(
+                df, sheet_name, path.name,
+                sheet_images=sheet_images,
+                vision_client=self._vision_client,
+            )
             chunks.extend(sheet_chunks)
 
         logger.info(
@@ -98,6 +120,13 @@ class ExcelParser:
         wb = load_workbook(buffer)
         self._unmerge_all_cells(wb)
 
+        # Extract image anchors before closing
+        image_map = self._extract_image_map(wb)
+
+        # Strip images so save won't hit closed handles
+        for ws in wb.worksheets:
+            ws._images = []
+
         clean_buffer = io.BytesIO()
         wb.save(clean_buffer)
         clean_buffer.seek(0)
@@ -107,7 +136,12 @@ class ExcelParser:
 
         chunks: List[Dict[str, str]] = []
         for sheet_name, df in sheets.items():
-            sheet_chunks = self._stringify_sheet(df, sheet_name, source_file)
+            sheet_images = image_map.get(sheet_name, {})
+            sheet_chunks = self._stringify_sheet(
+                df, sheet_name, source_file,
+                sheet_images=sheet_images,
+                vision_client=self._vision_client,
+            )
             chunks.extend(sheet_chunks)
 
         return chunks
@@ -151,6 +185,56 @@ class ExcelParser:
                     ws.title,
                 )
 
+    # ── Internal: Image Extraction ──────────────────────────────────
+
+    @staticmethod
+    def _extract_image_map(wb) -> Dict[str, Dict[int, List[tuple]]]:
+        """
+        Scan all sheets for images and return a map of:
+          { sheet_name: { row_number: [(col_letter, image_bytes), ...] } }
+
+        The row_number is 0-indexed (pandas convention) and accounts for
+        the header row by subtracting 2 from the openpyxl 1-indexed anchor.
+        """
+        from openpyxl.utils import get_column_letter
+
+        image_map: Dict[str, Dict[int, List[tuple]]] = {}
+
+        for ws in wb.worksheets:
+            sheet_images: Dict[int, List[tuple]] = {}
+
+            for img in ws._images:
+                anchor = getattr(img, "anchor", None)
+                if anchor is None:
+                    continue
+
+                # TwoCellAnchor / OneCellAnchor — top-left cell
+                _from = getattr(anchor, "_from", None) or getattr(anchor, "from_", None)
+                if _from is None:
+                    continue
+
+                # openpyxl uses 0-indexed row/col on the anchor _from
+                anchor_row = _from.row       # 0-indexed
+                anchor_col = _from.col + 1   # 1-indexed for get_column_letter
+
+                # Adjust for pandas: pandas row 0 == openpyxl row 2
+                # (row 1 is the header). So pandas_row = anchor_row - 1.
+                pandas_row = anchor_row - 1
+
+                col_letter = get_column_letter(anchor_col)
+
+                # Extract the image bytes from the image blob
+                image_data = img._data()
+
+                if pandas_row not in sheet_images:
+                    sheet_images[pandas_row] = []
+                sheet_images[pandas_row].append((col_letter, image_data))
+
+            if sheet_images:
+                image_map[ws.title] = sheet_images
+
+        return image_map
+
     # ── Internal: Row Stringification ───────────────────────────────
 
     @staticmethod
@@ -158,6 +242,8 @@ class ExcelParser:
         df: pd.DataFrame,
         sheet_name: str,
         source_file: str,
+        sheet_images: Optional[Dict[int, List[tuple]]] = None,
+        vision_client: Optional[GeminiVisionClient] = None,
     ) -> List[Dict[str, str]]:
         """
         Convert a dataframe into row-level chunk dicts.
@@ -168,7 +254,12 @@ class ExcelParser:
           • Completely empty rows are dropped.
           • NaN values are omitted from the chunk string.
           • Column headers are cleaned (stripped of whitespace).
+          • If an image is anchored to this row, it is triaged via
+            the vision client and injected as [Image at Col X: ...].
         """
+        if sheet_images is None:
+            sheet_images = {}
+
         # Drop fully empty rows
         df = df.dropna(how="all").reset_index(drop=True)
 
@@ -177,7 +268,7 @@ class ExcelParser:
 
         chunks: List[Dict[str, str]] = []
 
-        for _, row in df.iterrows():
+        for row_idx, row in df.iterrows():
             parts: List[str] = [f"[Sheet: {sheet_name}]"]
 
             for col_name, value in zip(columns, row.values):
@@ -194,6 +285,17 @@ class ExcelParser:
                 continue
 
             raw_context = " ".join(parts)
+
+            # ── Inject image transcriptions for this row ────────────
+            if row_idx in sheet_images and vision_client is not None:
+                for col_letter, image_data in sheet_images[row_idx]:
+                    transcription = vision_client.transcribe_image(
+                        image_data,
+                        surrounding_context=raw_context,
+                    )
+                    if transcription != DECORATIVE_MARKER:
+                        raw_context += f" [Image at Col {col_letter}: {transcription}]"
+
             chunks.append({
                 "raw_context": raw_context,
                 "source_file": source_file,
