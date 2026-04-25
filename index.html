@@ -362,10 +362,12 @@
                 data_classification: document.getElementById('data_classification').value
             });
 
-            // Determine endpoint
+            // Determine endpoint and chunked param
             let endpoint = '/convert/batch';
             if (mode === 'unchunked') {
-                endpoint = '/convert/batch/unchunked';
+                params.append('chunked', 'false');
+            } else {
+                params.append('chunked', 'true');
             }
 
             try {
@@ -374,12 +376,39 @@
                     body: formData
                 });
                 
-                const data = await response.json();
-                
                 if (response.ok) {
-                    showResult(true, `Successfully processed ${fileCount} files into ${data.total_chunks} chunk(s) in ${data.processing_time_ms}ms. Output JSONL ready.`);
+                    // Handle file download
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    
+                    // Get filename from Content-Disposition header if possible
+                    const disposition = response.headers.get('Content-Disposition');
+                    let filename = mode === 'unchunked' ? 'batch_unchunked.zip' : 'batch_converted.zip';
+                    if (disposition && disposition.indexOf('filename=') !== -1) {
+                        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                        const matches = filenameRegex.exec(disposition);
+                        if (matches != null && matches[1]) { 
+                            filename = matches[1].replace(/['"]/g, '');
+                        }
+                    }
+                    
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    
+                    showResult(true, `Successfully processed ${fileCount} files. Download started.`);
                 } else {
-                    showResult(false, data.detail || 'API Error occurred.');
+                    const errText = await response.text();
+                    try {
+                        const errJson = JSON.parse(errText);
+                        showResult(false, errJson.detail || 'API Error occurred.');
+                    } catch (e) {
+                        showResult(false, errText || 'API Error occurred.');
+                    }
                 }
             } catch (err) {
                 showResult(false, 'Network error. Is the server running?');

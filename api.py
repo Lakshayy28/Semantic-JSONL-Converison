@@ -11,9 +11,8 @@ Run:
 Endpoints:
     GET  /health                    — Health check
     POST /convert                   — Single file → JSONL download
-    POST /convert/unchunked         — Single file → one-record JSONL download
+    POST /convert                   — Single file → JSONL download
     POST /convert/batch             — Multiple files → ZIP of JSONLs
-    POST /convert/batch/unchunked   — Multiple files → ZIP of unchunked JSONLs
 """
 
 from __future__ import annotations
@@ -135,6 +134,7 @@ async def convert_file(
     usecase_id: str = Query("default", description="Business use-case identifier"),
     identifier: str = Query("api-upload", description="Team or system identifier"),
     data_classification: str = Query("internal", description="Data sensitivity label"),
+    chunked: bool = Query(True, description="Whether to chunk the output or return a single record"),
 ):
     """
     Upload a single file → returns the converted JSONL file directly.
@@ -150,52 +150,16 @@ async def convert_file(
 
     temp_path = _save_upload(file)
     try:
-        chunks = _run_chunked(str(temp_path), usecase_id, identifier,
-                              data_classification)
+        if chunked:
+            chunks = _run_chunked(str(temp_path), usecase_id, identifier,
+                                  data_classification)
+            out_name = f"{Path(file.filename).stem}.jsonl"
+        else:
+            chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
+                                    data_classification)
+            out_name = f"{Path(file.filename).stem}_unchunked.jsonl"
+            
         jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
-        out_name = f"{Path(file.filename).stem}.jsonl"
-
-        return Response(
-            content=jsonl_bytes,
-            media_type="application/x-ndjson",
-            headers={
-                "Content-Disposition": f'attachment; filename="{out_name}"',
-                "X-Chunks-Produced": str(len(chunks)),
-            },
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
-
-
-@app.post("/convert/unchunked", tags=["Conversion"])
-async def convert_file_unchunked(
-    file: UploadFile = File(..., description="File to convert (whole-file mode)"),
-    usecase_id: str = Query("default", description="Business use-case identifier"),
-    identifier: str = Query("api-upload", description="Team or system identifier"),
-    data_classification: str = Query("internal", description="Data sensitivity label"),
-):
-    """
-    Upload a file → returns a single-record JSONL (unchunked mode).
-
-    The parsers still clean the data (DOCX→Markdown, Excel unmerge, $ref resolve)
-    but all output is aggregated into one `raw_context`.
-    """
-    ext = Path(file.filename).suffix.lower()
-    if ext not in SUPPORTED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Supported: {SUPPORTED}",
-        )
-
-    temp_path = _save_upload(file)
-    try:
-        chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
-                                data_classification)
-        jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
-        out_name = f"{Path(file.filename).stem}_unchunked.jsonl"
 
         return Response(
             content=jsonl_bytes,
@@ -218,6 +182,7 @@ async def convert_batch(
     usecase_id: str = Query("default", description="Business use-case identifier"),
     identifier: str = Query("api-upload", description="Team or system identifier"),
     data_classification: str = Query("internal", description="Data sensitivity label"),
+    chunked: bool = Query(True, description="Whether to chunk the output or return a single record per file"),
 ):
     """
     Upload multiple files → returns a ZIP archive of individual JSONL files.
@@ -234,10 +199,16 @@ async def convert_batch(
 
             temp_path = _save_upload(upload)
             try:
-                chunks = _run_chunked(str(temp_path), usecase_id, identifier,
-                                      data_classification)
+                if chunked:
+                    chunks = _run_chunked(str(temp_path), usecase_id, identifier,
+                                          data_classification)
+                    out_name = f"{Path(upload.filename).stem}.jsonl"
+                else:
+                    chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
+                                            data_classification)
+                    out_name = f"{Path(upload.filename).stem}_unchunked.jsonl"
+                    
                 jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
-                out_name = f"{Path(upload.filename).stem}.jsonl"
                 zf.writestr(out_name, jsonl_bytes)
             except Exception:
                 # Skip failed files, don't crash the batch
@@ -247,56 +218,14 @@ async def convert_batch(
                     temp_path.unlink()
 
     zip_buffer.seek(0)
+    
+    zip_name = "batch_converted.zip" if chunked else "batch_unchunked.zip"
 
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
         headers={
-            "Content-Disposition": 'attachment; filename="batch_converted.zip"',
-        },
-    )
-
-
-@app.post("/convert/batch/unchunked", tags=["Conversion"])
-async def convert_batch_unchunked(
-    files: List[UploadFile] = File(..., description="Files to convert (unchunked)"),
-    usecase_id: str = Query("default", description="Business use-case identifier"),
-    identifier: str = Query("api-upload", description="Team or system identifier"),
-    data_classification: str = Query("internal", description="Data sensitivity label"),
-):
-    """
-    Upload multiple files → returns a ZIP archive of unchunked JSONL files.
-
-    Each input file produces exactly one record in its own `.jsonl`, in upload order.
-    """
-    zip_buffer = io.BytesIO()
-
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for upload in files:
-            ext = Path(upload.filename).suffix.lower()
-            if ext not in SUPPORTED:
-                continue
-
-            temp_path = _save_upload(upload)
-            try:
-                chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
-                                        data_classification)
-                jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
-                out_name = f"{Path(upload.filename).stem}_unchunked.jsonl"
-                zf.writestr(out_name, jsonl_bytes)
-            except Exception:
-                pass
-            finally:
-                if temp_path.exists():
-                    temp_path.unlink()
-
-    zip_buffer.seek(0)
-
-    return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": 'attachment; filename="batch_unchunked.zip"',
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
         },
     )
 
