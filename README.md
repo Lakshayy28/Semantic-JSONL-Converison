@@ -8,10 +8,10 @@ The downstream ingestion API calculates **768-dimensional embeddings** exclusive
 
 ```
 .
-├── api.py                           # FastAPI REST backend (POST /convert, GET /files, etc.)
+├── api.py                           # FastAPI REST backend (POST /convert, etc)
 ├── artifact_conversion_report.md    # Documented test report of all artifact conversions
 ├── artifacts/                       # Source enterprise files for conversion
-├── jsonl/                           # Generated JSONL output files (one per source file)
+├── index.html                       # Frontend UI for uploading files
 ├── semantic_pipeline/
 │   ├── models.py                    # ChunkRecord (Pydantic) + EmitterConfig
 │   ├── emitter.py                   # JSONLEmitter with 9.5MB pre-check rollover
@@ -123,53 +123,42 @@ source .venv/bin/activate
 uvicorn api:app --reload --port 8000
 ```
 
-The interactive Swagger docs are available at **http://localhost:8000/docs**.
+Once running, you can access the interactive **Premium Web Portal UI** at **http://localhost:8000/** to test single and batch conversions via a drag-and-drop interface.
+
+The interactive API Swagger docs are also available at **http://localhost:8000/docs**.
 
 ### Endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check — lists supported extensions |
-| `POST` | `/convert` | Upload a single file → JSONL conversion (chunked) |
-| `POST` | `/convert/unchunked` | Upload a single file → **one** JSONL record (whole-file mode) |
-| `POST` | `/convert/batch` | Upload multiple files → batch JSONL conversion |
-| `POST` | `/convert/batch/unchunked` | Upload multiple files → batch JSONL conversion (whole-file mode) |
-| `GET` | `/files` | List all generated JSONL output files |
-| `GET` | `/files/{filename}` | Download a specific JSONL file |
-| `DELETE` | `/files` | Clear all generated JSONL files |
+| `POST` | `/convert` | Upload a single file → Returns JSONL file directly |
+| `POST` | `/convert/batch` | Upload multiple files → Returns a ZIP containing JSONL files |
 
-All output `.jsonl` files are written to the `jsonl/` directory. Each uploaded file produces its own named JSONL output (e.g., uploading `decision_controller_rules.xlsx` creates `decision_controller_rules_001.jsonl`).
+*Note on chunking:* Both conversion endpoints support an optional boolean query parameter `chunked=False` (defaults to `True`) which tells the API to emit exactly **one** JSONL record containing the entire parsed content (whole-file mode).
+
+No output files are stored permanently on the server; the FastAPI endpoints stream all generated JSONL content directly back to your client. There is also a visual frontend matching that functionality located at `/` (served via `index.html` inside `api.py` if configured, or manually).
 
 ### Examples
 
 **Convert a single file:**
 ```bash
-curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/decision_controller_rules.xlsx"
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules" \
+  -F "file=@artifacts/decision_controller_rules.xlsx" -o output.jsonl
 ```
 
-**Batch convert multiple files:**
+**Batch convert multiple files (returns a ZIP):**
 ```bash
-curl -X POST "http://localhost:8000/convert/batch?usecase_id=credit-full" \
+curl -X POST "http://localhost:8000/convert/batch?usecase_id=credit-full&chunked=true" \
   -F "files=@artifacts/credit_decisioning_openapi.yaml" \
   -F "files=@artifacts/decision_controller_rules.xlsx" \
-  -F "files=@artifacts/credit_decisioning_swagger.json"
-```
-
-**List output files:**
-```bash
-curl http://localhost:8000/files
-```
-
-**Download a JSONL file:**
-```bash
-curl -O http://localhost:8000/files/decision_controller_rules_001.jsonl
+  -o batch_output.zip
 ```
 
 **Unchunked (whole-file) conversion:**
 ```bash
-curl -X POST "http://localhost:8000/convert/unchunked?usecase_id=credit-decisioning" \
-  -F "file=@artifacts/credit_decisioning_openapi.yaml"
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&chunked=false" \
+  -F "file=@artifacts/credit_decisioning_openapi.yaml" -o output_unchunked.jsonl
 ```
 
 For a full end-to-end test report covering all 5 workspace artifacts (126 chunks across all file types), see [`artifact_conversion_report.md`](artifact_conversion_report.md).
