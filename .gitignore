@@ -18,3 +18,7 @@ jsonl/*
 # API output & temp files
 jsonl/
 .uploads/
+
+#env
+.env
+.env.*

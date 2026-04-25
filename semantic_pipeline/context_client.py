@@ -3,7 +3,7 @@ GeminiContextClient — Contextual Chunking via Global Document Summary
 ======================================================================
 Implements the Anthropic "Contextual Chunking" pattern:  before a
 document is split into chunks we extract its full text, pass it to
-``gemini-2.5-flash`` to generate a 3-5 sentence global summary, and
+``gemini-2.5-pro`` to generate a 3-5 sentence global summary, and
 then prepend that summary to **every** chunk so that vector retrieval
 always has the document's global context.
 
@@ -58,7 +58,7 @@ BACKOFF_MAX_SECONDS = 10
 
 class GeminiContextClient:
     """
-    Generates a global document summary using ``gemini-2.5-flash``
+    Generates a global document summary using ``gemini-2.5-pro``
     via the Anthropic "Contextual Chunking" pattern.
 
     Usage::
@@ -83,7 +83,7 @@ class GeminiContextClient:
     def prepare_payload(self, full_document_text: str) -> dict:
         """
         Build an OpenAI-compatible chat-completion request body for
-        ``gemini-2.5-flash``.
+        ``gemini-2.5-pro``.
 
         Args:
             full_document_text: The complete extracted text of the document.
@@ -92,7 +92,7 @@ class GeminiContextClient:
             Dict matching the OpenAI chat-completion schema.
         """
         return {
-            "model": "gemini-2.5-flash",
+            "model": "gemini-2.5-pro",
             "messages": [
                 {
                     "role": "system",
@@ -173,9 +173,30 @@ class GeminiContextClient:
 
     def _execute_request(self, payload: dict) -> str:
         """
-        Stub — returns mock context when api_key is not "MOCK".
-
-        In production, replace with an actual HTTP call using
-        ``timeout=self.timeout``.
+        Executes a real gemini-2.5-pro HTTP request.
         """
-        return MOCK_CONTEXT
+        if self.api_key == "MOCK":
+            return MOCK_CONTEXT
+
+        import httpx
+
+        # Map OpenAI payload schema to Gemini generateContent schema
+        gemini_payload = {"contents": []}
+        for msg in payload.get("messages", []):
+            if msg["role"] == "system":
+                gemini_payload["systemInstruction"] = {"parts": [{"text": msg["content"]}]}
+            elif msg["role"] == "user":
+                gemini_payload["contents"].append({"parts": [{"text": msg["content"]}]})
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{payload['model']}:generateContent?key={self.api_key}"
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(url, json=gemini_payload)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            try:
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError):
+                return FALLBACK_STRING
+

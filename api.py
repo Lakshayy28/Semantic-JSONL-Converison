@@ -22,6 +22,9 @@ import zipfile
 from pathlib import Path
 from typing import List
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.openapi.utils import get_openapi
