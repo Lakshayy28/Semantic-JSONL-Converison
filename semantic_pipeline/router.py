@@ -2,10 +2,11 @@
 SemanticRouter — The File Dispatcher
 =====================================
 Routes incoming files to the correct format-specific parser based on
-file extension.  Each parser is responsible for producing a list of
-ChunkRecord objects, which are then fed to the JSONLEmitter.
+file extension.  Each parser produces a list of raw chunk dicts,
+which are converted into ChunkRecords, enriched with global document
+context (via GeminiContextClient), and then fed to the JSONLEmitter.
 
-All parsers are fully operational:
+Supported parsers:
   • MarkdownParser   → .md, .txt
   • WordParser        → .docx
   • ExcelParser       → .xlsx, .xls
@@ -15,15 +16,13 @@ All parsers are fully operational:
 from __future__ import annotations
 
 import logging
-import os
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .emitter import JSONLEmitter
 from .models import ChunkRecord, EmitterConfig
-from .context_client import GeminiContextClient, MOCK_CONTEXT, FALLBACK_STRING
+from .context_client import GeminiContextClient, FALLBACK_STRING
 from .parsers.excel_parser import ExcelParser
 from .parsers.markdown_parser import MarkdownParser
 from .parsers.structured_parser import StructuredParser
@@ -50,10 +49,9 @@ class SemanticRouter:
     Orchestrates the full ingestion pipeline:
       1. Scan an input directory (or accept individual files).
       2. Route each file to its specialised parser.
-      3. Collect ChunkRecords from the parser.
-      4. Feed them to the JSONLEmitter.
-
-    All parsers are fully operational. No stubs remain.
+      3. Generate a global document summary via GeminiContextClient.
+      4. Prepend the summary to every chunk's raw_context.
+      5. Feed ChunkRecords to the JSONLEmitter.
     """
 
     def __init__(self, config: EmitterConfig, context_client: Optional[GeminiContextClient] = None) -> None:
@@ -120,7 +118,7 @@ class SemanticRouter:
                 "Emitted %d chunks from %s", len(chunks), path.name
             )
         else:
-            logger.info("No chunks produced for %s (parser may be stubbed).", file_path)
+            logger.info("No chunks produced for %s (empty or unsupported content).", file_path)
             self._skipped_files.append(file_path)
 
         return chunks

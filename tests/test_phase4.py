@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
 
 import pytest
-import yaml
 
 from semantic_pipeline.models import ChunkRecord, EmitterConfig
 from semantic_pipeline.parsers.structured_parser import StructuredParser

@@ -16,10 +16,6 @@ Validates:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, patch, call
-
-import pytest
-from tenacity import RetryError
 
 from semantic_pipeline.vision_client import (
     GeminiVisionClient,
@@ -27,7 +23,6 @@ from semantic_pipeline.vision_client import (
     FALLBACK_PREFIX,
     DEFAULT_TIMEOUT_SECONDS,
     MAX_RETRY_ATTEMPTS,
-    BACKOFF_MIN_SECONDS,
 )
 
 

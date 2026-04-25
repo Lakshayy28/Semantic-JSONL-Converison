@@ -12,14 +12,9 @@ Validates:
 from __future__ import annotations
 
 import base64
-import io
 import json
 import tempfile
 from pathlib import Path
-from typing import List
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from semantic_pipeline.vision_client import (
     GeminiVisionClient,

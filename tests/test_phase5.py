@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
 
 import pytest
 from docx import Document as DocxDocument
 from openpyxl import Workbook
 
-from semantic_pipeline.models import ChunkRecord, EmitterConfig
+from semantic_pipeline.models import EmitterConfig
 from semantic_pipeline.parsers.structured_parser import StructuredParser
 from semantic_pipeline.parsers.word_parser import WordParser
 from semantic_pipeline.router import SemanticRouter

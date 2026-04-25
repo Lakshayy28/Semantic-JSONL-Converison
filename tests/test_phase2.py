@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 import pytest
 from docx import Document
-from docx.shared import Pt
 
 from semantic_pipeline.models import ChunkRecord, EmitterConfig
 from semantic_pipeline.parsers.markdown_parser import MarkdownParser

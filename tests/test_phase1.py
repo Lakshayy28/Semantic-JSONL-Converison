@@ -1,18 +1,15 @@
 """
-Phase 1 Tests — Data Models, JSONLEmitter Rollover, SemanticRouter Stub
+Phase 1 Tests — Data Models, JSONLEmitter Rollover, SemanticRouter Core
 ========================================================================
 These tests verify:
   1. ChunkRecord schema validation and serialization.
   2. JSONLEmitter 10MB file rotation under realistic payloads.
-  3. SemanticRouter stub dispatches gracefully without crashing.
+  3. SemanticRouter core dispatch behaviour.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -322,12 +319,12 @@ class TestJSONLEmitter:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 3. SemanticRouter Stub Tests
+# 3. SemanticRouter Core Tests
 # ═══════════════════════════════════════════════════════════════════
 
 
 class TestSemanticRouter:
-    """Verify the router stub dispatches gracefully without crashing."""
+    """Verify the router dispatches correctly and handles edge cases."""
 
     def test_supported_extensions_defined(self):
         """All target file types must be registered."""

@@ -11,16 +11,13 @@ Run:
 Endpoints:
     GET  /health                    — Health check
     POST /convert                   — Single file → JSONL download
-    POST /convert                   — Single file → JSONL download
     POST /convert/batch             — Multiple files → ZIP of JSONLs
 """
 
 from __future__ import annotations
 
 import io
-import json
 import tempfile
-import time
 import zipfile
 from pathlib import Path
 from typing import List
@@ -28,7 +25,7 @@ from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.openapi.utils import get_openapi
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from semantic_pipeline.models import EmitterConfig, ChunkRecord
 from semantic_pipeline.router import SemanticRouter

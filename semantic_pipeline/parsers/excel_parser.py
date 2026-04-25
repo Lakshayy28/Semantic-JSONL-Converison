@@ -23,13 +23,11 @@ from __future__ import annotations
 
 import io
 import logging
-from copy import copy
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
 
 from ..vision_client import GeminiVisionClient, DECORATIVE_MARKER
 

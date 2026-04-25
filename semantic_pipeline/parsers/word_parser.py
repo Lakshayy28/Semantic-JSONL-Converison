@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from docx import Document
-from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
 
 from .markdown_parser import MarkdownParser
 from ..vision_client import GeminiVisionClient, DECORATIVE_MARKER
