@@ -83,7 +83,7 @@ class GeminiContextClient:
     def prepare_payload(self, full_document_text: str) -> dict:
         """
         Build an OpenAI-compatible chat-completion request body for
-        ``gemini-2.5-pro``.
+        the configured context model.
 
         Args:
             full_document_text: The complete extracted text of the document.
@@ -91,8 +91,9 @@ class GeminiContextClient:
         Returns:
             Dict matching the OpenAI chat-completion schema.
         """
+        model_name = os.environ.get("GEMINI_CONTEXT_MODEL", "gemini-2.5-flash")
         return {
-            "model": "gemini-2.5-pro",
+            "model": model_name,
             "messages": [
                 {
                     "role": "system",

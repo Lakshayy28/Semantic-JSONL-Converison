@@ -101,10 +101,12 @@ class GeminiVisionClient:
             Dict matching the OpenAI chat-completion schema with
             base64-encoded image inlined.
         """
+        import os
         base64_string = base64.b64encode(image_bytes).decode("utf-8")
+        model_name = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.5-pro")
 
         return {
-            "model": "gemini-2.5-pro",
+            "model": model_name,
             "messages": [
                 {
                     "role": "system",

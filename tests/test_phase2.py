@@ -11,6 +11,7 @@ These tests verify:
 """
 
 from __future__ import annotations
+import os
 
 import json
 from pathlib import Path

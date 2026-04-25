@@ -86,7 +86,7 @@ class TestContextClient:
     def test_payload_model(self):
         client = GeminiContextClient()
         payload = client.prepare_payload("Some document text.")
-        assert payload["model"] == "gemini-2.5-pro"
+        assert payload["model"] == os.environ.get("GEMINI_CONTEXT_MODEL", "gemini-2.5-flash")
 
     def test_payload_has_system_prompt(self):
         client = GeminiContextClient()
