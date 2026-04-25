@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 
 from .emitter import JSONLEmitter
 from .models import ChunkRecord, EmitterConfig
+from .context_client import GeminiContextClient, MOCK_CONTEXT, FALLBACK_STRING
 from .parsers.excel_parser import ExcelParser
 from .parsers.markdown_parser import MarkdownParser
 from .parsers.structured_parser import StructuredParser
@@ -55,11 +56,12 @@ class SemanticRouter:
     All parsers are fully operational. No stubs remain.
     """
 
-    def __init__(self, config: EmitterConfig) -> None:
+    def __init__(self, config: EmitterConfig, context_client: Optional[GeminiContextClient] = None) -> None:
         self._config = config
         self._emitter = JSONLEmitter(config)
         self._skipped_files: List[str] = []
         self._processed_files: List[str] = []
+        self._context_client = context_client or GeminiContextClient()
 
         # ── Parser instances ────────────────────────────────────
         self._md_parser = MarkdownParser()
@@ -105,8 +107,11 @@ class SemanticRouter:
         parser_name = SUPPORTED_EXTENSIONS[ext]
         logger.info("Routing %s → %s", file_path, parser_name)
 
-        # ── Dispatch to parser ──────────────────────────────────────
-        chunks = self._dispatch(parser_name, path)
+        # ── Step 1: Extract full text for global context ───────────
+        global_context = self._generate_global_context(path)
+
+        # ── Step 2: Dispatch to parser for chunking ────────────────
+        chunks = self._dispatch(parser_name, path, global_context=global_context)
 
         if chunks:
             self._emitter.emit_many(chunks)
@@ -211,7 +216,7 @@ class SemanticRouter:
 
     # ── Internal Dispatch ───────────────────────────────────────────
 
-    def _dispatch(self, parser_name: str, file_path: Path) -> List[ChunkRecord]:
+    def _dispatch(self, parser_name: str, file_path: Path, global_context: Optional[str] = None) -> List[ChunkRecord]:
         """
         Dispatch to the correct parser and convert results to ChunkRecords.
         All file types are fully supported.
@@ -235,16 +240,21 @@ class SemanticRouter:
         raw_chunks = parser_fn()
 
         # ── Convert parser dicts → ChunkRecords ────────────────────
-        return self._to_chunk_records(raw_chunks, file_path)
+        return self._to_chunk_records(raw_chunks, file_path, global_context=global_context)
 
     def _to_chunk_records(
         self,
         raw_chunks: List[Dict[str, str]],
         file_path: Path,
+        global_context: Optional[str] = None,
     ) -> List[ChunkRecord]:
         """
         Convert parser output dicts into fully stamped ChunkRecords
         using the pipeline config defaults.
+
+        If ``global_context`` is provided it is prepended to every
+        chunk's ``raw_context`` using the tag:
+        ``[Global Document Context: <summary>]``
         """
         doc_id = f"doc-{uuid.uuid4().hex[:8]}"
         records: List[ChunkRecord] = []
@@ -253,6 +263,13 @@ class SemanticRouter:
             raw_context = chunk_dict.get("raw_context", "").strip()
             if not raw_context:
                 continue
+
+            # ── Prepend global context if available ─────────────────
+            if global_context:
+                raw_context = (
+                    f"[Global Document Context: {global_context}]\n\n"
+                    + raw_context
+                )
 
             record = ChunkRecord(
                 usecase_id=self._config.usecase_id,
@@ -265,6 +282,61 @@ class SemanticRouter:
             records.append(record)
 
         return records
+
+    # ── Global Context Helper ───────────────────────────────────────
+
+    def _generate_global_context(self, file_path: Path) -> Optional[str]:
+        """
+        Extract full document text (unchunked), pass to the context
+        client, and return the summary string.
+
+        Returns None if context generation fails or is empty.
+        """
+        ext = file_path.suffix.lower()
+        parser_name = SUPPORTED_EXTENSIONS.get(ext)
+        if not parser_name:
+            return None
+
+        parser_map = {
+            "MarkdownParser": lambda: self._md_parser.parse_file(str(file_path)),
+            "WordParser": lambda: self._word_parser.parse_file(str(file_path)),
+            "ExcelParser": lambda: self._excel_parser.parse_file(str(file_path)),
+            "StructuredParser": lambda: self._structured_parser.parse_file(str(file_path)),
+        }
+
+        parser_fn = parser_map.get(parser_name)
+        if not parser_fn:
+            return None
+
+        try:
+            raw_chunks = parser_fn()
+            if not raw_chunks:
+                return None
+
+            full_text = "\n\n".join(
+                c.get("raw_context", "").strip()
+                for c in raw_chunks
+                if c.get("raw_context", "").strip()
+            )
+
+            if not full_text:
+                return None
+
+            summary = self._context_client.generate_global_context(full_text)
+            if summary == FALLBACK_STRING:
+                logger.warning("Global context generation failed for %s.", file_path.name)
+                return None
+
+            logger.info(
+                "Generated global context (%d chars) for %s.",
+                len(summary),
+                file_path.name,
+            )
+            return summary
+
+        except Exception as e:
+            logger.warning("Error generating global context for %s: %s", file_path.name, e)
+            return None
 
     # ── Context Manager ─────────────────────────────────────────────
 

@@ -544,7 +544,7 @@ class TestSemanticRouterPhase2:
             chunks = router.ingest_file(str(txt_file))
 
         assert len(chunks) >= 1
-        assert chunks[0].raw_context == "These are plain text notes without any headers."
+        assert "These are plain text notes without any headers." in chunks[0].raw_context
 
 
 # ═══════════════════════════════════════════════════════════════════
