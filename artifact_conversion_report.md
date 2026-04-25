@@ -2,7 +2,21 @@
 
 **Date:** April 23, 2026  
 **API Endpoint:** `POST http://localhost:8000/convert`  
-**Output Directory:** `jsonl/`
+**Output:** JSONL bytes returned directly in the response body (no server-side storage)
+
+---
+
+## API Response Format
+
+The `/convert` endpoint returns JSONL content directly as `application/x-ndjson` bytes — not a JSON envelope. Conversion metadata is carried in response headers:
+
+| Header | Example |
+|---|---|
+| `Content-Type` | `application/x-ndjson` |
+| `Content-Disposition` | `attachment; filename="high_level_design.jsonl"` |
+| `X-Chunks-Produced` | `6` |
+
+For unchunked mode (`chunked=false`) the filename becomes `<stem>_unchunked.jsonl`.
 
 ---
 
@@ -25,24 +39,20 @@ All conversions were executed with the following shared query parameters:
 **Request:**
 ```bash
 curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/high_level_design.md"
+  -F "file=@artifacts/high_level_design.md" -o high_level_design.jsonl
 ```
 
-**Response:**
-```json
-{
-    "status": "success",
-    "source_file": "high_level_design.md",
-    "chunks_produced": 6,
-    "jsonl_files": ["high_level_design_001.jsonl"],
-    "processing_time_ms": 0.43
-}
+**Response Headers:**
+```
+Content-Type: application/x-ndjson
+Content-Disposition: attachment; filename="high_level_design.jsonl"
+X-Chunks-Produced: 6
 ```
 
 **Parser Used:** `MarkdownParser`  
-**Chunking Strategy:** Header-aware splitting via `MarkdownHeaderTextSplitter` with breadcrumb stitching (e.g., `Section: HLD > 1. System Overview`).  
+**Chunking Strategy:** Header-aware splitting via `MarkdownHeaderTextSplitter` with breadcrumb stitching (e.g., `Section: HLD > 1. System Overview`). Global document summary prepended to each chunk's `raw_context` via `GeminiContextClient`.  
 **Source Size:** 1,448 bytes  
-**Output File:** `jsonl/high_level_design_001.jsonl` (3.5 KB, 6 chunks)
+**Chunks:** 6
 
 **Sample Chunk:**
 ```json
@@ -65,24 +75,20 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
 **Request:**
 ```bash
 curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/business_architecture.docx"
+  -F "file=@artifacts/business_architecture.docx" -o business_architecture.jsonl
 ```
 
-**Response:**
-```json
-{
-    "status": "success",
-    "source_file": "business_architecture.docx",
-    "chunks_produced": 6,
-    "jsonl_files": ["business_architecture_001.jsonl", "high_level_design_001.jsonl"],
-    "processing_time_ms": 14.29
-}
+**Response Headers:**
+```
+Content-Type: application/x-ndjson
+Content-Disposition: attachment; filename="business_architecture.jsonl"
+X-Chunks-Produced: 6
 ```
 
 **Parser Used:** `WordParser` → `MarkdownParser`  
-**Chunking Strategy:** DOCX heading styles (Heading 1-4) are converted to Markdown syntax, then processed by `MarkdownParser` with breadcrumb stitching.  
+**Chunking Strategy:** DOCX heading styles (Heading 1-4) are converted to Markdown syntax, Word tables extracted to Markdown table format, then processed by `MarkdownParser` with breadcrumb stitching. Global document summary prepended to each chunk via `GeminiContextClient`.  
 **Source Size:** 37,703 bytes  
-**Output File:** `jsonl/business_architecture_001.jsonl` (3.8 KB, 6 chunks)
+**Chunks:** 6
 
 **Sample Chunk:**
 ```json
@@ -105,24 +111,20 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
 **Request:**
 ```bash
 curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/decision_controller_rules.xlsx"
+  -F "file=@artifacts/decision_controller_rules.xlsx" -o decision_controller_rules.jsonl
 ```
 
-**Response:**
-```json
-{
-    "status": "success",
-    "source_file": "decision_controller_rules.xlsx",
-    "chunks_produced": 50,
-    "jsonl_files": ["business_architecture_001.jsonl", "high_level_design_001.jsonl", "decision_controller_rules_001.jsonl"],
-    "processing_time_ms": 37.5
-}
+**Response Headers:**
+```
+Content-Type: application/x-ndjson
+Content-Disposition: attachment; filename="decision_controller_rules.jsonl"
+X-Chunks-Produced: 50
 ```
 
 **Parser Used:** `ExcelParser`  
-**Chunking Strategy:** Merged cell unrolling via `openpyxl`, then `pandas` row-level stringification. Each row becomes `[Sheet: <name>] [<col>: <val>] ...`. Empty rows dropped, NaN values omitted.  
+**Chunking Strategy:** Merged cell unrolling via `openpyxl`, then `pandas` row-level stringification. Each row becomes `[Sheet: <name>] [<col>: <val>] ...`. Empty rows dropped, NaN values omitted. Global document summary prepended to each chunk via `GeminiContextClient`.  
 **Source Size:** 117,616 bytes  
-**Output File:** `jsonl/decision_controller_rules_001.jsonl` (19.3 KB, 50 chunks)
+**Chunks:** 50
 
 **Sample Chunk:**
 ```json
@@ -145,24 +147,20 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
 **Request:**
 ```bash
 curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/credit_decisioning_openapi.yaml"
+  -F "file=@artifacts/credit_decisioning_openapi.yaml" -o credit_decisioning_openapi.jsonl
 ```
 
-**Response:**
-```json
-{
-    "status": "success",
-    "source_file": "credit_decisioning_openapi.yaml",
-    "chunks_produced": 32,
-    "jsonl_files": ["business_architecture_001.jsonl", "credit_decisioning_openapi_001.jsonl", "high_level_design_001.jsonl", "decision_controller_rules_001.jsonl"],
-    "processing_time_ms": 16.18
-}
+**Response Headers:**
+```
+Content-Type: application/x-ndjson
+Content-Disposition: attachment; filename="credit_decisioning_openapi.jsonl"
+X-Chunks-Produced: 32
 ```
 
 **Parser Used:** `StructuredParser` (API spec mode)  
-**Chunking Strategy:** Detected `openapi: 3.0.3` top-level key → endpoint-level bundling. Each chunk contains: API title/version, Method + Path, Summary, Tags, Parameters, and Responses bundled together.  
+**Chunking Strategy:** Detected `openapi: 3.0.3` top-level key → endpoint-level bundling. Each chunk contains: API title/version, Method + Path, Summary, Tags, Parameters, and Responses. All `$ref` pointers resolved before traversal. Global document summary prepended via `GeminiContextClient`.  
 **Source Size:** 6,378 bytes  
-**Output File:** `jsonl/credit_decisioning_openapi_001.jsonl` (13.9 KB, 32 chunks)
+**Chunks:** 32
 
 **Sample Chunk:**
 ```json
@@ -185,24 +183,20 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
 **Request:**
 ```bash
 curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/credit_decisioning_swagger.json"
+  -F "file=@artifacts/credit_decisioning_swagger.json" -o credit_decisioning_swagger.jsonl
 ```
 
-**Response:**
-```json
-{
-    "status": "success",
-    "source_file": "credit_decisioning_swagger.json",
-    "chunks_produced": 32,
-    "jsonl_files": ["credit_decisioning_swagger_001.jsonl", "business_architecture_001.jsonl", "credit_decisioning_openapi_001.jsonl", "high_level_design_001.jsonl", "decision_controller_rules_001.jsonl"],
-    "processing_time_ms": 0.81
-}
+**Response Headers:**
+```
+Content-Type: application/x-ndjson
+Content-Disposition: attachment; filename="credit_decisioning_swagger.jsonl"
+X-Chunks-Produced: 32
 ```
 
 **Parser Used:** `StructuredParser` (API spec mode)  
-**Chunking Strategy:** Detected `swagger: "2.0"` top-level key → same endpoint-level bundling as OpenAPI. 32 endpoints bundled identically to the YAML spec.  
+**Chunking Strategy:** Detected `swagger: "2.0"` top-level key → same endpoint-level bundling as OpenAPI. 32 endpoints bundled identically to the YAML spec. Global document summary prepended via `GeminiContextClient`.  
 **Source Size:** 9,548 bytes  
-**Output File:** `jsonl/credit_decisioning_swagger_001.jsonl` (13.9 KB, 32 chunks)
+**Chunks:** 32
 
 **Sample Chunk:**
 ```json
@@ -210,7 +204,7 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
     "usecase_id": "credit-decisioning",
     "document_id": "doc-d45e4bdf",
     "chunk_id": "chunk-5240d398da0b",
-    "raw_context": "API: Credit Decisioning Microservice API (v2.5.0). API Endpoint: POST /applications. Summary: Submit a new application. Tags: Application. Responses: 201 (Application created).",
+    "raw_context": "[Global context: Credit Decisioning Microservice API v2.5.0 provides endpoints for submitting and managing loan applications, performing credit checks, and retrieving decision results.] API: Credit Decisioning Microservice API (v2.5.0). API Endpoint: POST /applications. Summary: Submit a new application. Tags: Application. Responses: 201 (Application created).",
     "file_name": "credit_decisioning_swagger.json",
     "data_classification": "confidential",
     "sor_last_modified": "04/23/2026",
@@ -222,13 +216,15 @@ curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&identi
 
 ## Summary
 
-| # | Artifact | Type | Parser | Chunks | Output File | Size |
-|---|---|---|---|---|---|---|
-| 1 | `high_level_design.md` | Markdown | MarkdownParser | 6 | `high_level_design_001.jsonl` | 3.5 KB |
-| 2 | `business_architecture.docx` | Word | WordParser → MarkdownParser | 6 | `business_architecture_001.jsonl` | 3.8 KB |
-| 3 | `decision_controller_rules.xlsx` | Excel | ExcelParser | 50 | `decision_controller_rules_001.jsonl` | 19.3 KB |
-| 4 | `credit_decisioning_openapi.yaml` | OpenAPI 3.0 | StructuredParser | 32 | `credit_decisioning_openapi_001.jsonl` | 13.9 KB |
-| 5 | `credit_decisioning_swagger.json` | Swagger 2.0 | StructuredParser | 32 | `credit_decisioning_swagger_001.jsonl` | 13.9 KB |
-| | **TOTAL** | | | **126** | **5 files** | **54.4 KB** |
+| # | Artifact | Type | Parser | Chunks |
+|---|---|---|---|---|
+| 1 | `high_level_design.md` | Markdown | MarkdownParser | 6 |
+| 2 | `business_architecture.docx` | Word | WordParser → MarkdownParser | 6 |
+| 3 | `decision_controller_rules.xlsx` | Excel | ExcelParser | 50 |
+| 4 | `credit_decisioning_openapi.yaml` | OpenAPI 3.0 | StructuredParser | 32 |
+| 5 | `credit_decisioning_swagger.json` | Swagger 2.0 | StructuredParser | 32 |
+| | **TOTAL** | | | **126** |
+
+All output is returned as JSONL bytes in the HTTP response body. No files are stored on the server.
 
 All output JSONL files are stored in the `jsonl/` directory and are **not deleted** — they persist for downstream consumption.
