@@ -2,81 +2,49 @@
 FastAPI Backend — Semantic JSONL Conversion API
 =================================================
 Exposes REST endpoints to upload enterprise files and convert them
-into semantically chunked JSONL via the SemanticRouter pipeline.
+into semantically chunked JSONL.  Every POST endpoint returns the
+converted JSONL content directly — nothing is stored on disk.
 
 Run:
     uvicorn api:app --reload --port 8000
 
 Endpoints:
-    POST /convert          — Upload a single file → JSONL conversion
-    POST /convert/batch    — Upload multiple files → JSONL conversion
-    GET  /files            — List generated JSONL output files
-    GET  /files/{filename} — Download a specific JSONL file
-    GET  /health           — Health check
-    DELETE /files          — Clear all generated JSONL files
+    GET  /health                    — Health check
+    POST /convert                   — Single file → JSONL download
+    POST /convert/batch             — Multiple files → ZIP of JSONLs
 """
 
 from __future__ import annotations
 
-import os
-import shutil
-import time
+import io
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
-from fastapi.openapi.utils import get_openapi
-from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+load_dotenv()
 
-from semantic_pipeline.models import EmitterConfig
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel
+
+from semantic_pipeline.models import EmitterConfig, ChunkRecord
 from semantic_pipeline.router import SemanticRouter
 
 # ── Configuration ───────────────────────────────────────────────
-JSONL_OUTPUT_DIR = Path(__file__).parent / "jsonl"
 UPLOAD_TEMP_DIR = Path(__file__).parent / ".uploads"
-
-# Ensure directories exist
-JSONL_OUTPUT_DIR.mkdir(exist_ok=True)
 UPLOAD_TEMP_DIR.mkdir(exist_ok=True)
 
 
 # ── Response Models ─────────────────────────────────────────────
-
-class ConvertResponse(BaseModel):
-    """Response from a successful file conversion."""
-    status: str = "success"
-    source_file: str
-    chunks_produced: int
-    jsonl_files: List[str]
-    processing_time_ms: float
-
-
-class BatchConvertResponse(BaseModel):
-    """Response from a batch file conversion."""
-    status: str = "success"
-    files_processed: int
-    files_skipped: int
-    total_chunks: int
-    jsonl_files: List[str]
-    processing_time_ms: float
-    details: List[dict]
-
-
-class FileListResponse(BaseModel):
-    """Response listing available JSONL files."""
-    output_directory: str
-    files: List[dict]
-    total_files: int
-    total_size_bytes: int
-
 
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str = "healthy"
     pipeline_version: str = "1.0.0"
     supported_extensions: List[str]
-    output_directory: str
 
 
 # ── FastAPI App ─────────────────────────────────────────────────
@@ -86,49 +54,61 @@ app = FastAPI(
     description=(
         "Upload enterprise files (.xlsx, .docx, .md, .txt, .json, .yaml) "
         "and convert them into semantically chunked JSONL format for RAG pipelines. "
-        "Output files are written to the `jsonl/` directory.\n\n"
-        "**NOTE:** For batch file uploading, use the Custom Web Portal at the root (`/`) "
-        "instead of Swagger UI, as Swagger does not natively support multi-file selection."
+        "Every conversion endpoint returns the JSONL file directly — "
+        "no server-side storage.\n\n"
+        "**Batch endpoints** return a ZIP archive containing one JSONL per input file."
     ),
-    version="1.0.0",
+    version="2.0.0",
 )
 
 SUPPORTED = [".xlsx", ".xls", ".docx", ".md", ".json", ".yaml", ".yml", ".txt"]
 
 
-# ── Helper ──────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────
 
 def _save_upload(upload: UploadFile) -> Path:
     """Save an uploaded file to the temp directory and return the path."""
-    safe_name = Path(upload.filename).name  # strip directory components
+    safe_name = Path(upload.filename).name
     dest = UPLOAD_TEMP_DIR / safe_name
-
     with open(dest, "wb") as f:
-        content = upload.file.read()
-        f.write(content)
-
+        f.write(upload.file.read())
     return dest
 
 
-def _get_jsonl_files() -> List[dict]:
-    """List all .jsonl files in the output directory."""
-    files = []
-    for f in sorted(JSONL_OUTPUT_DIR.glob("*.jsonl")):
-        files.append({
-            "filename": f.name,
-            "size_bytes": f.stat().st_size,
-            "size_human": _human_size(f.stat().st_size),
-        })
-    return files
+def _chunks_to_jsonl_bytes(chunks: List[ChunkRecord]) -> bytes:
+    """Serialize a list of ChunkRecords into a JSONL byte string."""
+    lines = [chunk.to_jsonl_line() for chunk in chunks]
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _human_size(size_bytes: int) -> str:
-    """Convert bytes to human-readable string."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
+def _run_chunked(file_path: str, usecase_id: str, identifier: str,
+                 data_classification: str) -> List[ChunkRecord]:
+    """Run the chunked pipeline in-memory (no disk output)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = EmitterConfig(
+            output_dir=tmpdir,
+            base_filename="mem",
+            usecase_id=usecase_id,
+            identifier=identifier,
+            data_classification=data_classification,
+        )
+        with SemanticRouter(config) as router:
+            return router.ingest_file(file_path)
+
+
+def _run_unchunked(file_path: str, usecase_id: str, identifier: str,
+                   data_classification: str) -> List[ChunkRecord]:
+    """Run the unchunked pipeline in-memory (no disk output)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = EmitterConfig(
+            output_dir=tmpdir,
+            base_filename="mem",
+            usecase_id=usecase_id,
+            identifier=identifier,
+            data_classification=data_classification,
+        )
+        with SemanticRouter(config) as router:
+            return router.ingest_file_unchunked(file_path)
 
 
 # ── Endpoints ───────────────────────────────────────────────────
@@ -145,84 +125,22 @@ async def serve_ui():
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     """Check API health and list supported file types."""
-    return HealthResponse(
-        supported_extensions=SUPPORTED,
-        output_directory=str(JSONL_OUTPUT_DIR.resolve()),
-    )
+    return HealthResponse(supported_extensions=SUPPORTED)
 
 
-@app.post("/convert", response_model=ConvertResponse, tags=["Conversion"])
+@app.post("/convert", tags=["Conversion"])
 async def convert_file(
     file: UploadFile = File(..., description="File to convert to JSONL"),
     usecase_id: str = Query("default", description="Business use-case identifier"),
     identifier: str = Query("api-upload", description="Team or system identifier"),
     data_classification: str = Query("internal", description="Data sensitivity label"),
+    chunked: bool = Query(True, description="Whether to chunk the output or return a single record"),
 ):
     """
-    Upload a single file and convert it to semantically chunked JSONL.
+    Upload a single file → returns the converted JSONL file directly.
 
-    The output `.jsonl` files are written to the `jsonl/` directory.
     Supported formats: .xlsx, .xls, .docx, .md, .txt, .json, .yaml, .yml
     """
-    # Validate extension
-    ext = Path(file.filename).suffix.lower()
-    if ext not in SUPPORTED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Supported: {SUPPORTED}",
-        )
-
-    # Save to temp
-    temp_path = _save_upload(file)
-
-    try:
-        start = time.perf_counter()
-
-        # Use source filename as base so each file gets its own JSONL
-        stem = Path(file.filename).stem
-        config = EmitterConfig(
-            output_dir=str(JSONL_OUTPUT_DIR),
-            base_filename=stem,
-            usecase_id=usecase_id,
-            identifier=identifier,
-            data_classification=data_classification,
-        )
-
-        with SemanticRouter(config) as router:
-            chunks = router.ingest_file(str(temp_path))
-
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        return ConvertResponse(
-            source_file=file.filename,
-            chunks_produced=len(chunks),
-            jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
-            processing_time_ms=round(elapsed_ms, 2),
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-    finally:
-        # Clean up temp file
-        if temp_path.exists():
-            temp_path.unlink()
-
-
-@app.post("/convert/unchunked", response_model=ConvertResponse, tags=["Conversion"])
-async def convert_file_unchunked(
-    file: UploadFile = File(..., description="File to convert (whole-file mode)"),
-    usecase_id: str = Query("default", description="Business use-case identifier"),
-    identifier: str = Query("api-upload", description="Team or system identifier"),
-    data_classification: str = Query("internal", description="Data sensitivity label"),
-):
-    """
-    Upload a file and emit exactly **one** JSONL record containing the entire
-    parsed content (no chunking). Useful when the downstream model can handle
-    full-document context windows.
-
-    The parsers still clean the data (DOCX→Markdown, Excel unmerge, $ref resolve)
-    but all output is aggregated into a single `raw_context`.
-    """
     ext = Path(file.filename).suffix.lower()
     if ext not in SUPPORTED:
         raise HTTPException(
@@ -231,31 +149,26 @@ async def convert_file_unchunked(
         )
 
     temp_path = _save_upload(file)
-
     try:
-        start = time.perf_counter()
+        if chunked:
+            chunks = _run_chunked(str(temp_path), usecase_id, identifier,
+                                  data_classification)
+            out_name = f"{Path(file.filename).stem}.jsonl"
+        else:
+            chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
+                                    data_classification)
+            out_name = f"{Path(file.filename).stem}_unchunked.jsonl"
+            
+        jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
 
-        stem = Path(file.filename).stem
-        config = EmitterConfig(
-            output_dir=str(JSONL_OUTPUT_DIR),
-            base_filename=f"{stem}_unchunked",
-            usecase_id=usecase_id,
-            identifier=identifier,
-            data_classification=data_classification,
+        return Response(
+            content=jsonl_bytes,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": f'attachment; filename="{out_name}"',
+                "X-Chunks-Produced": str(len(chunks)),
+            },
         )
-
-        with SemanticRouter(config) as router:
-            chunks = router.ingest_file_unchunked(str(temp_path))
-
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        return ConvertResponse(
-            source_file=file.filename,
-            chunks_produced=len(chunks),
-            jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
-            processing_time_ms=round(elapsed_ms, 2),
-        )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
     finally:
@@ -263,197 +176,61 @@ async def convert_file_unchunked(
             temp_path.unlink()
 
 
-@app.post("/convert/batch", response_model=BatchConvertResponse, tags=["Conversion"])
+@app.post("/convert/batch", tags=["Conversion"])
 async def convert_batch(
     files: List[UploadFile] = File(..., description="Files to convert"),
     usecase_id: str = Query("default", description="Business use-case identifier"),
     identifier: str = Query("api-upload", description="Team or system identifier"),
     data_classification: str = Query("internal", description="Data sensitivity label"),
+    chunked: bool = Query(True, description="Whether to chunk the output or return a single record per file"),
 ):
     """
-    Upload multiple files and convert them all to JSONL in a single batch.
+    Upload multiple files → returns a ZIP archive of individual JSONL files.
 
-    All output is written to the shared `jsonl/` directory.
+    Each input file produces its own `.jsonl` inside the ZIP, in upload order.
     """
-    start = time.perf_counter()
-    details = []
-    total_chunks = 0
-    files_skipped = 0
+    zip_buffer = io.BytesIO()
 
-    for upload in files:
-        ext = Path(upload.filename).suffix.lower()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for upload in files:
+            ext = Path(upload.filename).suffix.lower()
+            if ext not in SUPPORTED:
+                continue
 
-        if ext not in SUPPORTED:
-            details.append({
-                "file": upload.filename,
-                "status": "skipped",
-                "reason": f"Unsupported type: {ext}",
-                "chunks": 0,
-            })
-            files_skipped += 1
-            continue
+            temp_path = _save_upload(upload)
+            try:
+                if chunked:
+                    chunks = _run_chunked(str(temp_path), usecase_id, identifier,
+                                          data_classification)
+                    out_name = f"{Path(upload.filename).stem}.jsonl"
+                else:
+                    chunks = _run_unchunked(str(temp_path), usecase_id, identifier,
+                                            data_classification)
+                    out_name = f"{Path(upload.filename).stem}_unchunked.jsonl"
+                    
+                jsonl_bytes = _chunks_to_jsonl_bytes(chunks)
+                zf.writestr(out_name, jsonl_bytes)
+            except Exception:
+                # Skip failed files, don't crash the batch
+                pass
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
 
-        temp_path = _save_upload(upload)
-        try:
-            stem = Path(upload.filename).stem
-            config = EmitterConfig(
-                output_dir=str(JSONL_OUTPUT_DIR),
-                base_filename=stem,
-                usecase_id=usecase_id,
-                identifier=identifier,
-                data_classification=data_classification,
-            )
-            with SemanticRouter(config) as router:
-                chunks = router.ingest_file(str(temp_path))
-            total_chunks += len(chunks)
-            details.append({
-                "file": upload.filename,
-                "status": "success",
-                "chunks": len(chunks),
-            })
-        except Exception as e:
-            details.append({
-                "file": upload.filename,
-                "status": "error",
-                "reason": str(e),
-                "chunks": 0,
-            })
-            files_skipped += 1
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-
-    return BatchConvertResponse(
-        files_processed=len(files) - files_skipped,
-        files_skipped=files_skipped,
-        total_chunks=total_chunks,
-        jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
-        processing_time_ms=round(elapsed_ms, 2),
-        details=details,
-    )
-
-
-@app.post("/convert/batch/unchunked", response_model=BatchConvertResponse, tags=["Conversion"])
-async def convert_batch_unchunked(
-    files: List[UploadFile] = File(..., description="Files to convert in unchunked mode"),
-    usecase_id: str = Query("default", description="Business use-case identifier"),
-    identifier: str = Query("api-upload", description="Team or system identifier"),
-    data_classification: str = Query("internal", description="Data sensitivity label"),
-):
-    """
-    Upload multiple files and convert them all to JSONL in unchunked mode.
+    zip_buffer.seek(0)
     
-    Each file produces exactly one JSONL record containing its entire contents.
-    All output is written to the shared `jsonl/` directory.
-    """
-    start = time.perf_counter()
-    details = []
-    total_chunks = 0
-    files_skipped = 0
+    zip_name = "batch_converted.zip" if chunked else "batch_unchunked.zip"
 
-    for upload in files:
-        ext = Path(upload.filename).suffix.lower()
-
-        if ext not in SUPPORTED:
-            details.append({
-                "file": upload.filename,
-                "status": "skipped",
-                "reason": f"Unsupported type: {ext}",
-                "chunks": 0,
-            })
-            files_skipped += 1
-            continue
-
-        temp_path = _save_upload(upload)
-        try:
-            stem = Path(upload.filename).stem
-            config = EmitterConfig(
-                output_dir=str(JSONL_OUTPUT_DIR),
-                base_filename=f"{stem}_unchunked",
-                usecase_id=usecase_id,
-                identifier=identifier,
-                data_classification=data_classification,
-            )
-            with SemanticRouter(config) as router:
-                chunks = router.ingest_file_unchunked(str(temp_path))
-            total_chunks += len(chunks)
-            details.append({
-                "file": upload.filename,
-                "status": "success",
-                "chunks": len(chunks),
-            })
-        except Exception as e:
-            details.append({
-                "file": upload.filename,
-                "status": "error",
-                "reason": str(e),
-                "chunks": 0,
-            })
-            files_skipped += 1
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-
-    return BatchConvertResponse(
-        files_processed=len(files) - files_skipped,
-        files_skipped=files_skipped,
-        total_chunks=total_chunks,
-        jsonl_files=[f.name for f in JSONL_OUTPUT_DIR.glob("*.jsonl")],
-        processing_time_ms=round(elapsed_ms, 2),
-        details=details,
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+        },
     )
-
-
-@app.get("/files", response_model=FileListResponse, tags=["Output Files"])
-async def list_output_files():
-    """List all generated JSONL files in the output directory."""
-    files = _get_jsonl_files()
-    total_size = sum(f["size_bytes"] for f in files)
-
-    return FileListResponse(
-        output_directory=str(JSONL_OUTPUT_DIR.resolve()),
-        files=files,
-        total_files=len(files),
-        total_size_bytes=total_size,
-    )
-
-
-@app.get("/files/{filename}", tags=["Output Files"])
-async def download_file(filename: str):
-    """Download a specific JSONL output file."""
-    file_path = JSONL_OUTPUT_DIR / filename
-
-    if not file_path.exists() or not file_path.suffix == ".jsonl":
-        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-
-    return FileResponse(
-        path=str(file_path),
-        filename=filename,
-        media_type="application/x-ndjson",
-    )
-
-
-@app.delete("/files", tags=["Output Files"])
-async def clear_output_files():
-    """Delete all JSONL files from the output directory."""
-    files = list(JSONL_OUTPUT_DIR.glob("*.jsonl"))
-    count = len(files)
-
-    for f in files:
-        f.unlink()
-
-    return {"status": "cleared", "files_deleted": count}
 
 
 # ── OpenAPI Spec Patch ──────────────────────────────────────────
-# Swagger UI (as bundled in FastAPI) does not correctly render
-# multi-file upload widgets when `contentMediaType` is present
-# alongside `type: array`. We strip it and force `format: binary`
-# on all file-upload fields so the UI shows proper file pickers.
 
 def custom_openapi():
     if app.openapi_schema:
@@ -468,23 +245,18 @@ def custom_openapi():
     schemas = openapi_schema.get("components", {}).get("schemas", {})
     for schema in schemas.values():
         for prop_name, prop in schema.get("properties", {}).items():
-            # Single file: type=string, contentMediaType=...
             if (
                 prop.get("type") == "string"
                 and prop.get("contentMediaType") == "application/octet-stream"
             ):
                 prop.pop("contentMediaType", None)
                 prop["format"] = "binary"
-
-            # Multiple files: type=array, items.contentMediaType=...
             elif prop.get("type") == "array":
                 items = prop.get("items", {})
                 if items.get("contentMediaType") == "application/octet-stream":
-                    # Replace items entirely so Swagger UI renders multi-file
                     prop["items"] = {"type": "string", "format": "binary"}
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
-

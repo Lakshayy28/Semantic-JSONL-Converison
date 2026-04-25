@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Optional
+
 
 from tenacity import (
     retry,
@@ -101,10 +101,12 @@ class GeminiVisionClient:
             Dict matching the OpenAI chat-completion schema with
             base64-encoded image inlined.
         """
+        import os
         base64_string = base64.b64encode(image_bytes).decode("utf-8")
+        model_name = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.5-pro")
 
         return {
-            "model": "gemini-2.5-pro",
+            "model": model_name,
             "messages": [
                 {
                     "role": "system",
@@ -199,26 +201,61 @@ class GeminiVisionClient:
 
         return _inner()
 
-    # ── Mock Stub ───────────────────────────────────────────────────
+    # ── Real Execution ───────────────────────────────────────────────────
 
     def _execute_request(self, payload: dict) -> str:
         """
-        Stub — returns a mock transcription.
-
-        In production, a downstream service replaces this with an
-        actual HTTP call to the Gemini API.  The call MUST use
-        ``timeout=self.timeout`` (default 60 s) to wait patiently
-        for complex diagram analysis.
-
-        Example production implementation::
-
-            import httpx
-            response = httpx.post(
-                "https://api.example.com/v1/chat/completions",
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+        Executes a real gemini-2.5-pro HTTP request via httpx.
+        Converts the OpenAI-style multimodal payload to native Gemini format.
         """
-        return "MOCK_TRANSCRIPTION_FLOWCHART: Step 1 -> Step 2"
+        import os
+        import httpx
+
+        # We fall back to os.environ safely since api_key might not be in __init__
+        api_key = getattr(self, "api_key", os.environ.get("GEMINI_API_KEY", "MOCK"))
+
+        if api_key == "MOCK":
+            return "MOCK_TRANSCRIPTION_FLOWCHART: Step 1 -> Step 2"
+
+        # Translate OpenAI multimodal payload to Gemini API
+        gemini_payload = {"contents": []}
+        
+        for msg in payload.get("messages", []):
+            if msg["role"] == "system":
+                gemini_payload["systemInstruction"] = {"parts": [{"text": msg["content"]}]}
+            elif msg["role"] == "user":
+                content = msg["content"]
+                if isinstance(content, str):
+                    gemini_payload["contents"].append({"parts": [{"text": content}]})
+                elif isinstance(content, list):
+                    # Handle image/text arrays
+                    parts = []
+                    for item in content:
+                        if item.get("type") == "image_url":
+                            # Parse "data:image/jpeg;base64,ABC..."
+                            data_uri = item["image_url"]["url"]
+                            header, b64_data = data_uri.split(",", 1)
+                            mime_type = header.split(":", 1)[1].split(";")[0]
+                            parts.append({
+                                "inlineData": {
+                                    "mimeType": mime_type,
+                                    "data": b64_data
+                                }
+                            })
+                        elif item.get("type") == "text":
+                            parts.append({"text": item.get("text", "")})
+                    
+                    if parts:
+                        gemini_payload["contents"].append({"parts": parts})
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{payload['model']}:generateContent?key={api_key}"
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(url, json=gemini_payload)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            try:
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError):
+                return FALLBACK_PREFIX

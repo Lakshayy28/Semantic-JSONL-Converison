@@ -2,31 +2,43 @@
 
 A local, production-grade file ingestion and semantic chunking pipeline that converts heterogeneous enterprise files (`.xlsx`, `.docx`, `.md`, `.txt`, `.json`, `.yaml`) into structured JSONL format for RAG (Retrieval-Augmented Generation) downstream processing.
 
-The downstream ingestion API calculates **768-dimensional embeddings** exclusively on a field called `raw_context`. The pipeline's semantic chunking strategies are designed to preserve hierarchical and tabular context boundaries — never using blind character splitting that would destroy document structure.
+The downstream ingestion API calculates **768-dimensional embeddings** exclusively on a field called `raw_context`. Before chunking, the pipeline uses **Google Gemini** to generate a 3-5 sentence global document summary (Anthropic "Contextual Chunking" pattern) that is prepended to every chunk's `raw_context` — ensuring vector retrieval always carries document-level context.
 
 ## 🏗 System Architecture
 
 ```
 .
-├── api.py                           # FastAPI REST backend (POST /convert, GET /files, etc.)
-├── artifact_conversion_report.md    # Documented test report of all artifact conversions
+├── api.py                           # FastAPI REST backend (POST /convert, etc)
+├── artifact_conversion_report.md    # Documented test report of artifact conversions
 ├── artifacts/                       # Source enterprise files for conversion
-├── jsonl/                           # Generated JSONL output files (one per source file)
+├── index.html                       # Frontend drag-and-drop UI
+├── run_e2e.py                       # End-to-end integration test script
+├── requirements.txt                 # All Python dependencies
+├── .env                             # API keys and model names (not committed)
+├── .env.example                     # Template for .env
 ├── semantic_pipeline/
 │   ├── models.py                    # ChunkRecord (Pydantic) + EmitterConfig
 │   ├── emitter.py                   # JSONLEmitter with 9.5MB pre-check rollover
 │   ├── router.py                    # SemanticRouter — extension-based dispatcher
+│   ├── context_client.py            # GeminiContextClient — global context summary
+│   ├── vision_client.py             # GeminiVisionClient — image triage & transcription
 │   └── parsers/
 │       ├── markdown_parser.py       # Header-aware chunking with breadcrumb stitching
-│       ├── word_parser.py           # DOCX → Markdown conversion, then header chunking
+│       ├── word_parser.py           # DOCX → Markdown conversion + table extraction
 │       ├── excel_parser.py          # Merged-cell unrolling + row-level stringification
 │       └── structured_parser.py     # OpenAPI/Swagger endpoint bundling + generic fallback
-└── tests/                           # 106-test suite (Phases 1–4)
+└── tests/
+    ├── conftest.py                  # Sets GEMINI_API_KEY=MOCK before any import
+    └── test_api.py                  # 38-test consolidated suite (offline, <1s)
 ```
 
 ### Core Components
 
-* **SemanticRouter** (`router.py`): The main entry point. Resolves file extensions to specialized parsers, collects `ChunkRecord` objects, and feeds them to the `JSONLEmitter`. Supports single-file ingestion (`ingest_file`), directory-level ingestion (`ingest_directory`), and **unchunked whole-file mode** (`ingest_file_unchunked`) which emits exactly one record per file.
+* **SemanticRouter** (`router.py`): The main entry point. Resolves file extensions to specialized parsers, generates a global document summary via `GeminiContextClient` and prepends it to every chunk, collects `ChunkRecord` objects, and feeds them to the `JSONLEmitter`. Supports single-file ingestion (`ingest_file`), directory-level ingestion (`ingest_directory`), and **unchunked whole-file mode** (`ingest_file_unchunked`) which emits exactly one record per file.
+
+* **GeminiContextClient** (`context_client.py`): Implements the Anthropic "Contextual Chunking" pattern. Sends the full document text to `gemini-2.5-flash` and receives a 3-5 sentence global summary that is prepended to every chunk's `raw_context`. Configured via `GEMINI_CONTEXT_MODEL` env var. Returns `[GLOBAL_CONTEXT_FAILED]` on error and never crashes the pipeline. Uses `tenacity` exponential backoff with 3 retries.
+
+* **GeminiVisionClient** (`vision_client.py`): Triage-and-transcribe pipeline for images extracted from DOCX files. Sends images to `gemini-2.5-pro` (configurable via `GEMINI_VISION_MODEL`). Returns `DECORATIVE_DISCARD` for logos/stock photos, or a step-by-step transcription for flowcharts and diagrams. Gracefully degrades to a `[IMAGE_TRANSCRIPTION_FAILED: ...]` prefix on error. Uses `tenacity` with 3 retries and a 60-second timeout.
 
 * **Parsers** (`parsers/`): Format-specific semantic chunking logic:
 
@@ -58,6 +70,18 @@ Each line in the output `.jsonl` files conforms to:
 }
 ```
 
+## ⚙️ Environment Variables
+
+Create a `.env` file in the project root (copy from `.env.example`):
+
+```bash
+GEMINI_API_KEY="your-gemini-api-key"
+GEMINI_CONTEXT_MODEL="gemini-2.5-flash"   # model for contextual summarisation
+GEMINI_VISION_MODEL="gemini-2.5-pro"      # model for image transcription
+```
+
+Setting `GEMINI_API_KEY=MOCK` disables all real HTTP calls and returns deterministic stubs — this is what the test suite uses automatically via `tests/conftest.py`.
+
 ## 🚀 How to Use It
 
 ### 1. Installation
@@ -68,13 +92,14 @@ Set up a Python 3.10+ virtual environment and install dependencies:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # then fill in your GEMINI_API_KEY
 ```
 
 ### 2. Generating Sample Data
 
 To generate test artifacts simulating a Credit Decisioning Underwriting Microservice (Excel rulesets, Word architecture docs, Markdown guides, OpenAPI specs):
 
-*Note: The standalone artifact generator script has been removed from the repository. The artifacts should be generated upstream or manually placed in the `artifacts/` folder.*
+*Note: The standalone artifact generator script has been removed from the repository. Place source files manually in the `artifacts/` folder.*
 
 ### 3. Running the Pipeline
 
@@ -123,89 +148,76 @@ source .venv/bin/activate
 uvicorn api:app --reload --port 8000
 ```
 
-The interactive Swagger docs are available at **http://localhost:8000/docs**.
+Once running, you can access the interactive **Premium Web Portal UI** at **http://localhost:8000/** to test single and batch conversions via a drag-and-drop interface.
+
+The interactive API Swagger docs are also available at **http://localhost:8000/docs**.
 
 ### Endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check — lists supported extensions |
-| `POST` | `/convert` | Upload a single file → JSONL conversion (chunked) |
-| `POST` | `/convert/unchunked` | Upload a single file → **one** JSONL record (whole-file mode) |
-| `POST` | `/convert/batch` | Upload multiple files → batch JSONL conversion |
-| `POST` | `/convert/batch/unchunked` | Upload multiple files → batch JSONL conversion (whole-file mode) |
-| `GET` | `/files` | List all generated JSONL output files |
-| `GET` | `/files/{filename}` | Download a specific JSONL file |
-| `DELETE` | `/files` | Clear all generated JSONL files |
+| `POST` | `/convert` | Upload a single file → returns JSONL bytes directly |
+| `POST` | `/convert/batch` | Upload multiple files → returns a ZIP of JSONL files |
 
-All output `.jsonl` files are written to the `jsonl/` directory. Each uploaded file produces its own named JSONL output (e.g., uploading `decision_controller_rules.xlsx` creates `decision_controller_rules_001.jsonl`).
+All conversion endpoints accept a `chunked` boolean query parameter (default `true`). Set `chunked=false` to emit exactly **one** JSONL record containing the entire parsed content.
+
+**Response headers** for `/convert`:
+- `Content-Type: application/x-ndjson`
+- `Content-Disposition: attachment; filename="<stem>.jsonl"` (or `<stem>_unchunked.jsonl`)
+- `X-Chunks-Produced: <n>`
+
+No output files are stored on the server — all JSONL content is streamed directly back to the client.
 
 ### Examples
 
 **Convert a single file:**
 ```bash
-curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules&identifier=underwriting-team&data_classification=confidential" \
-  -F "file=@artifacts/decision_controller_rules.xlsx"
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-rules" \
+  -F "file=@artifacts/decision_controller_rules.xlsx" -o output.jsonl
 ```
 
-**Batch convert multiple files:**
+**Batch convert multiple files (returns a ZIP):**
 ```bash
-curl -X POST "http://localhost:8000/convert/batch?usecase_id=credit-full" \
+curl -X POST "http://localhost:8000/convert/batch?usecase_id=credit-full&chunked=true" \
   -F "files=@artifacts/credit_decisioning_openapi.yaml" \
   -F "files=@artifacts/decision_controller_rules.xlsx" \
-  -F "files=@artifacts/credit_decisioning_swagger.json"
-```
-
-**List output files:**
-```bash
-curl http://localhost:8000/files
-```
-
-**Download a JSONL file:**
-```bash
-curl -O http://localhost:8000/files/decision_controller_rules_001.jsonl
+  -o batch_output.zip
 ```
 
 **Unchunked (whole-file) conversion:**
 ```bash
-curl -X POST "http://localhost:8000/convert/unchunked?usecase_id=credit-decisioning" \
-  -F "file=@artifacts/credit_decisioning_openapi.yaml"
+curl -X POST "http://localhost:8000/convert?usecase_id=credit-decisioning&chunked=false" \
+  -F "file=@artifacts/credit_decisioning_openapi.yaml" -o output_unchunked.jsonl
 ```
 
 For a full end-to-end test report covering all 5 workspace artifacts (126 chunks across all file types), see [`artifact_conversion_report.md`](artifact_conversion_report.md).
 
 ## 🧪 Testing
 
-The pipeline has a comprehensive **131-test suite** organized by phase:
+The pipeline has a **38-test consolidated suite** that runs entirely offline (no real API calls, no network) in under one second.
 
 ```bash
 # Run the full suite
 pytest tests/ -v
 
-# Run a specific phase
-pytest tests/test_phase1.py -v   # 21 tests — Models, Emitter, Router foundation
-pytest tests/test_phase2.py -v   # 26 tests — Markdown, DOCX, header stitching
-pytest tests/test_phase3.py -v   # 19 tests — Excel, merged cells, NaN handling
-pytest tests/test_phase4.py -v   # 37 tests — OpenAPI/Swagger, generic fallback
-pytest tests/test_phase5.py -v   # 25 tests — Unchunked mode, $ref resolution, table extraction
+# Quick smoke check
+pytest tests/test_api.py -q
 ```
+
+`tests/conftest.py` sets `GEMINI_API_KEY=MOCK` at module level before any import occurs. This causes both `GeminiContextClient` and `GeminiVisionClient` to return deterministic stubs without touching the network — `load_dotenv()` in `api.py` cannot override an env var already set in `os.environ`.
 
 ### What's Tested
 
-| Area | Coverage |
-|---|---|
-| Schema validation | Non-empty fields, date format, chunk ID uniqueness |
-| JSONL rollover | Pre-check byte measurement, 9.5 MB cap enforcement, sequential file naming |
-| Header stitching | Breadcrumb paths, recursive fallback overlap verification |
-| DOCX conversion | Heading style → Markdown mapping, round-trip through MarkdownParser |
-| DOCX tables | Word table → Markdown table syntax, header/data row extraction |
-| Merged cells | Single-column merges, multi-dimensional block merges, value propagation |
-| Data cleaning | Empty row removal, NaN omission, column-header context injection |
-| API spec detection | OpenAPI 3.x, Swagger 2.0, generic fallback, invalid input handling |
-| Endpoint bundling | Method, Path, Summary, Parameters, Request Body, Responses extraction |
-| `$ref` resolution | Schema field inlining, required-field tagging, no `$ref` strings in output |
-| Unchunked mode | Single-record per file, chunk_id `{doc_id}-full`, cross-format support |
-| Real artifacts | Tests against actual workspace files (skipped if unavailable) |
+| Class | Tests | Coverage |
+|---|---|---|
+| `TestHealthEndpoint` | 3 | Status 200, `status` field, supported extensions list |
+| `TestConvertEndpoint` | 5 | Markdown → JSONL, xlsx → JSONL, 400 on unsupported, `X-Chunks-Produced` header, `Content-Disposition` filename |
+| `TestChunkedVsUnchunked` | 5 | Unchunked = 1 record, chunked ≥ 1, filename suffix `_unchunked`, xlsx unchunked = 1 record |
+| `TestBatchEndpoint` | 4 | Returns ZIP, one JSONL per file, skips unsupported, mixed formats |
+| `TestVisionClient` | 7 | Payload structure, base64 image, system prompt, mock stub, `DECORATIVE_DISCARD` constant, graceful degradation, no exception raised |
+| `TestContextClient` | 9 | Mock returns `MOCK_CONTEXT`, empty doc → fallback, whitespace → fallback, system prompt, user message, degradation on failure, no exception, timeout ≥ 30, retries ≥ 1 |
+| `TestLLMConnectivity` | 5 | Mock key never calls httpx, real (fake) key attempts HTTP, `top_p=1` in both payloads |
 
 ## 📦 Dependencies
 
@@ -220,6 +232,10 @@ pytest tests/test_phase5.py -v   # 25 tests — Unchunked mode, $ref resolution,
 | `python-docx` | DOCX paragraph, heading, and table extraction |
 | `PyYAML` | YAML file parsing |
 | `jsonref>=1.0.0` | OpenAPI `$ref` pointer resolution |
+| `httpx>=0.27.0` | HTTP client for Gemini API calls |
+| `tenacity>=8.0.0` | Exponential backoff retry for Gemini requests |
+| `python-dotenv>=1.0.0` | Loads `.env` into `os.environ` at startup |
+| `Pillow>=10.0.0` | Image handling for vision pipeline |
 
 ### API Server
 
@@ -234,7 +250,3 @@ pytest tests/test_phase5.py -v   # 25 tests — Unchunked mode, $ref resolution,
 | Package | Purpose |
 |---|---|
 | `pytest>=8.0.0` | Test framework |
-
-### Artifact Generation
-
-*The standalone artifact generation packages (`matplotlib`, `Pillow`, `XlsxWriter`) have been removed from the repository requirements.*
